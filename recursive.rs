@@ -8,6 +8,7 @@ fn factorial(n: u32) -> u32 {
 
 fn main() {
     let num = 5;
-    println!("The factorial of {} is {}", num, factorial(num));
+    let result = factorial(num);
+    println!("The factorial of {} is {}", num, result);
 }
 

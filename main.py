@@ -264,6 +264,23 @@ def draw_and_export_graph(graph, svg_path, highlight_path=None):
     plt.close()
 
 
+def detect_recursion(graph):
+    """
+    Detects recursive functions in the call graph.
+    Returns a set of function names that are recursive (directly or indirectly).
+    """
+    recursive_funcs = set()
+    try:
+        # Find all simple cycles in the graph
+        cycles = list(nx.simple_cycles(graph))
+        for cycle in cycles:
+            for func in cycle:
+                recursive_funcs.add(func)
+    except Exception:
+        pass
+    return recursive_funcs
+
+
 def main():
     parser_arg = argparse.ArgumentParser(
         description="Analyze Rust code to find the function call graph and export it as SVG."
@@ -286,6 +303,15 @@ def main():
     if not call_graph.nodes:
         print("\nNo functions were found or successfully parsed in the provided code.")
         sys.exit(0)
+
+    # Recursion detection
+    recursive_funcs = detect_recursion(call_graph)
+    if recursive_funcs:
+        print("\nDetected recursion in the following function(s):")
+        for func in sorted(recursive_funcs):
+            print(f"  - {func}")
+    else:
+        print("\nNo recursion detected in the call graph.")
 
     longest_path = find_longest_path_in_graph(call_graph)
 
