@@ -4,54 +4,24 @@ import argparse
 import networkx as nx
 from tree_sitter import Language, Parser
 import tree_sitter_rust
-import os
 import sys
 
-# --- Tree-sitter Setup (Build Directory Only) ---
+# --- Tree-sitter Setup (Use tree_sitter_rust only) ---
 
-build_dir = "./build"
-
-build_dir_grammar_files = [
-    os.path.join(build_dir, "languages.so"),
-    os.path.join(build_dir, "my-languages.so"),
-    os.path.join(build_dir, "tree_sitter_rust.so"),
-    os.path.join(build_dir, "libtree-sitter-rust.dylib"),
-    os.path.join(build_dir, "tree_sitter_rust.dylib"),
-    os.path.join(build_dir, "languages.dll"),
-    os.path.join(build_dir, "my-languages.dll"),
-    os.path.join(build_dir, "tree_sitter_rust.dll"),
-]
-
-language_path = None
-checked_paths = []
 RUST_LANGUAGE = None
-
-if not os.path.isdir(build_dir):
-    raise FileNotFoundError(
-        f"Build directory '{build_dir}' not found (cwd: {os.getcwd()})"
-    )
-
-for potential_path in build_dir_grammar_files:
-    checked_paths.append(potential_path)
-    if os.path.exists(potential_path):
-        language_path = os.path.abspath(potential_path)
-        break
-
-if not language_path:
-    raise FileNotFoundError(
-        f"Could not find compiled Rust grammar library (.so/.dylib/.dll) in '{build_dir}'. "
-        f"Searched for: {checked_paths}"
-    )
+parser = None
 
 try:
     RUST_LANGUAGE = Language(tree_sitter_rust.language())
     print("RUST_LANGUAGE.version:", RUST_LANGUAGE.version)
+    # Check for compatible version (must be between 13 and 14 inclusive)
+    if not (13 <= RUST_LANGUAGE.version <= 14):
+        raise RuntimeError(
+            f"Incompatible Language version {RUST_LANGUAGE.version}. Must be between 13 and 14"
+        )
+    parser = Parser(RUST_LANGUAGE)
 except Exception as e:
-    raise RuntimeError(
-        f"Error loading Rust grammar for tree-sitter from path '{language_path}': {e}"
-    )
-
-parser = Parser(RUST_LANGUAGE)
+    raise RuntimeError(f"Error loading Rust grammar for tree-sitter: {e}")
 
 
 def find_nodes(node, node_type, results):
@@ -280,6 +250,6 @@ def main():
 
 
 if __name__ == "__main__":
-    if RUST_LANGUAGE is None:
+    if RUST_LANGUAGE is None or parser is None:
         sys.exit(1)
     main()
