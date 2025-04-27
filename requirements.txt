@@ -2,3 +2,4 @@ networkx
 tree_sitter==0.24.0
 tree_sitter_rust==0.23.2
 matplotlib
+cxxfilt
