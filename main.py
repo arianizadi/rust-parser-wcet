@@ -5,16 +5,13 @@ import networkx as nx
 from tree_sitter import Language, Parser
 import tree_sitter_rust
 import sys
-
-# --- Tree-sitter Setup (Use tree_sitter_rust only) ---
+import matplotlib.pyplot as plt
 
 RUST_LANGUAGE = None
 parser = None
 
 try:
     RUST_LANGUAGE = Language(tree_sitter_rust.language())
-    print("RUST_LANGUAGE.version:", RUST_LANGUAGE.version)
-    # Check for compatible version (must be between 13 and 14 inclusive)
     if not (13 <= RUST_LANGUAGE.version <= 14):
         raise RuntimeError(
             f"Incompatible Language version {RUST_LANGUAGE.version}. Must be between 13 and 14"
@@ -53,26 +50,6 @@ def build_call_graph(source_code):
         root_node = tree.root_node
     except Exception as parse_error:
         raise RuntimeError(f"Error during tree-sitter parsing: {parse_error}")
-
-    has_errors = False
-    error_nodes = []
-    queue = [root_node]
-    processed_node_ids = set()
-
-    while queue:
-        node = queue.pop(0)
-        if not node or node.id in processed_node_ids:
-            continue
-        processed_node_ids.add(node.id)
-
-        is_error_node = node.type == "ERROR" or node.is_missing or node.has_error
-
-        if is_error_node:
-            has_errors = True
-            error_nodes.append(node)
-            continue
-
-        queue.extend(node.children)
 
     functions = {}
     calls = []
@@ -212,11 +189,90 @@ def find_longest_path_in_graph(graph):
         return None
 
 
+def hierarchy_pos(G, root=None, width=1.0, vert_gap=0.3, vert_loc=0, xcenter=0.5, 
+                  pos=None, parent=None):
+    if pos is None:
+        pos = {}
+    if root is None:
+        roots = [n for n, d in G.in_degree() if d == 0]
+        if len(roots) > 0:
+            root = roots[0]
+        else:
+            root = list(G.nodes)[0]
+    children = list(G.successors(root))
+    if not isinstance(G, nx.DiGraph):
+        raise TypeError("hierarchy_pos requires a DiGraph")
+    if len(children) == 0:
+        pos[root] = (xcenter, vert_loc)
+    else:
+        dx = width / len(children)
+        nextx = xcenter - width/2 - dx/2
+        for child in children:
+            nextx += dx
+            pos = hierarchy_pos(G, root=child, width=dx, vert_gap=vert_gap,
+                                vert_loc=vert_loc-vert_gap, xcenter=nextx, pos=pos, parent=root)
+        pos[root] = (xcenter, vert_loc)
+    return pos
+
+
+def draw_and_export_graph(graph, svg_path, highlight_path=None):
+    plt.figure(figsize=(8, 6))
+
+    root = None
+    if "main" in graph.nodes:
+        root = "main"
+    else:
+        roots = [n for n, d in graph.in_degree() if d == 0]
+        if roots:
+            root = roots[0]
+        elif len(graph.nodes) > 0:
+            root = list(graph.nodes)[0]
+        else:
+            root = None
+
+    if root is not None and nx.is_directed_acyclic_graph(graph):
+        pos = hierarchy_pos(graph, root=root, width=1.0, vert_gap=0.25, vert_loc=0, xcenter=0.5)
+    else:
+        pos = nx.spring_layout(graph, seed=42) if len(graph.nodes) > 1 else nx.shell_layout(graph)
+
+    nx.draw_networkx_edges(graph, pos, arrows=True, arrowstyle='-|>', connectionstyle='arc3,rad=0.1', alpha=0.5)
+    nx.draw_networkx_nodes(graph, pos, node_color="#ccccff", node_size=1200, edgecolors="#333333")
+    nx.draw_networkx_labels(graph, pos, font_size=11, font_family="monospace")
+
+    if highlight_path and len(highlight_path) > 1:
+        path_edges = list(zip(highlight_path, highlight_path[1:]))
+        nx.draw_networkx_edges(
+            graph, pos,
+            edgelist=path_edges,
+            width=3,
+            edge_color="red",
+            arrows=True,
+            arrowstyle='-|>',
+            connectionstyle='arc3,rad=0.1'
+        )
+        nx.draw_networkx_nodes(
+            graph, pos,
+            nodelist=highlight_path,
+            node_color="#ffcccc",
+            node_size=1400,
+            edgecolors="#aa0000"
+        )
+
+    plt.axis("off")
+    plt.tight_layout()
+    plt.savefig(svg_path, format="svg")
+    plt.close()
+
+
 def main():
     parser_arg = argparse.ArgumentParser(
-        description="Analyze Rust code to find the longest function call path between defined functions (within the file)."
+        description="Analyze Rust code to find the function call graph and export it as SVG."
     )
     parser_arg.add_argument("rust_file", help="Path to the Rust source file.")
+    parser_arg.add_argument(
+        "--svg", dest="svg_file", default=None,
+        help="Path to output SVG file (default: <rust_file>.svg)"
+    )
     args = parser_arg.parse_args()
 
     try:
@@ -234,19 +290,29 @@ def main():
     longest_path = find_longest_path_in_graph(call_graph)
 
     if longest_path is None:
-        sys.exit(1)
-
-    if longest_path:
-        path_len_nodes = len(longest_path)
-        print(
-            f"\nLongest call path found (length {path_len_nodes} functions / {max(0, path_len_nodes - 1)} calls):"
-        )
-        path_str = [str(node) for node in longest_path]
-        print(" -> ".join(path_str))
+        print("The call graph contains cycles (recursion). Cannot highlight the longest path.")
+        highlight_path = None
     else:
+        highlight_path = longest_path
+
+    svg_path = args.svg_file
+    if not svg_path:
+        svg_path = args.rust_file.rsplit(".", 1)[0] + ".svg"
+
+    draw_and_export_graph(call_graph, svg_path, highlight_path=highlight_path)
+
+    print(f"\nCall graph exported as SVG: {svg_path}")
+    if highlight_path and len(highlight_path) > 1:
+        path_len_nodes = len(highlight_path)
         print(
-            "\nNo call paths found between the defined functions (graph might be disconnected or contain only single nodes)."
+            f"Longest call path highlighted (length {path_len_nodes} functions / {max(0, path_len_nodes - 1)} calls):"
         )
+        path_str = [str(node) for node in highlight_path]
+        print(" -> ".join(path_str))
+    elif highlight_path and len(highlight_path) == 1:
+        print(f"Only one function in the longest path: {highlight_path[0]}")
+    else:
+        print("No longest path highlighted (graph may be cyclic or disconnected).")
 
 
 if __name__ == "__main__":
