@@ -6,6 +6,7 @@ import sys
 import matplotlib.pyplot as plt
 import re # Import regular expressions
 import subprocess # To potentially call external demanglers if needed
+from collections import defaultdict # For edge cycle counts
 
 # Attempt to import cxxfilt, provide instructions if missing
 try:
@@ -120,7 +121,9 @@ def build_call_graph_from_ll(llvm_code):
 
     for caller, callee in calls:
         if full_graph.has_node(caller) and full_graph.has_node(callee):
-            full_graph.add_edge(caller, callee)
+             # Add edge, avoid self-loops if not desired
+             if caller != callee:
+                full_graph.add_edge(caller, callee)
 
     # --- Step 2: Filter the graph ---
     filtered_graph = nx.DiGraph()
@@ -132,7 +135,11 @@ def build_call_graph_from_ll(llvm_code):
     for node, raw_label in full_labels.items():
         # Determine if the node should be kept based on the raw demangled label
         keep_node = True
-        if raw_label.startswith('_ZN'): # Filter out if demangling failed
+        # Exclude main entry point if it's just 'main' (often just setup)
+        # Keep if it's crate::main
+        if raw_label == 'main':
+             keep_node = False
+        elif raw_label.startswith('_ZN'): # Filter out if demangling failed
             keep_node = False
         elif raw_label.startswith('std::'): # Filter out standard library
             keep_node = False
@@ -167,41 +174,21 @@ def build_call_graph_from_ll(llvm_code):
     print(f"Kept {kept_nodes} nodes, filtered out {filtered_out_nodes} nodes.")
 
     # --- Step 3: Add edges to the filtered graph ---
-    #    This step ensures connectivity is maintained *between* the kept nodes,
-    #    even if intermediate filtered-out nodes were involved in the original path.
     print("Adding edges to filtered graph (connecting kept nodes)...")
     added_edges = 0
-    # Use transitive closure or path finding on the *full* graph to connect kept nodes
     kept_node_set = set(filtered_graph.nodes())
     for u in kept_node_set:
-        # Find all nodes reachable from u in the full graph
-        reachable_in_full = nx.descendants(full_graph, u)
-        # Find which of those reachable nodes are also in our kept set
-        kept_descendants = reachable_in_full.intersection(kept_node_set)
-        # For each kept descendant, check if there's a *direct* edge in the full graph
-        # If not, it implies the path went through filtered nodes.
-        # We add a direct edge in the filtered graph to represent this reachability.
-        # (Alternative: Find shortest path in full graph and add edge if path exists)
-
         # Simpler approach: Add direct edges from full graph if both ends are kept.
-        # This is less accurate for showing indirect calls via filtered nodes,
-        # but much simpler to implement and often sufficient.
         for v in full_graph.successors(u):
              if v in kept_node_set: # If successor is also a kept node
                  if not filtered_graph.has_edge(u,v): # Avoid duplicates
                      filtered_graph.add_edge(u, v)
                      added_edges += 1
 
-
-    # To properly handle indirect calls (A calls B calls C, but B is filtered out -> show A calls C):
-    # This requires more complex path analysis on the full graph.
-    # For now, we stick to the simpler direct edge transfer. If indirect calls
-    # need visualization, a more sophisticated edge creation step is required.
-
     print(f"Added {added_edges} direct edges between kept nodes.")
 
 
-    # --- Step 4: Handle disconnected components (optional) ---
+    # --- Step 4: Handle disconnected components (optional but recommended) ---
     # Remove nodes that have no connections within the filtered graph
     isolated_nodes = list(nx.isolates(filtered_graph))
     if isolated_nodes:
@@ -226,39 +213,66 @@ def detect_cycles(graph):
 
     Returns:
         tuple: A tuple containing:
+            - list: A list of cycles (each cycle is a list of nodes).
             - set: A set of mangled node names involved in any cycle.
             - set: A set of edges (mangled_u, mangled_v) involved in any cycle.
     """
+    cycles_list = []
     cyclic_nodes = set()
     cyclic_edges = set()
     if not graph.nodes: # Skip if graph is empty after filtering
-        return cyclic_nodes, cyclic_edges
+        return cycles_list, cyclic_nodes, cyclic_edges
     try:
         # Find all simple cycles in the graph
-        cycles = list(nx.simple_cycles(graph))
-        for cycle in cycles:
+        cycles_list = list(nx.simple_cycles(graph)) # Store the list of cycles
+        for cycle in cycles_list:
             cyclic_nodes.update(cycle)
             # Add edges for the cycle
             for i in range(len(cycle)):
                 u = cycle[i]
                 v = cycle[(i + 1) % len(cycle)] # Handle wrap-around
+                # Ensure the edge actually exists in the graph (important for filtered graphs)
                 if graph.has_edge(u, v):
                     cyclic_edges.add((u, v))
     except Exception as e:
         print(f"Error during cycle detection: {e}", file=sys.stderr)
-        pass # Continue without cycle info if detection fails
-    return cyclic_nodes, cyclic_edges
+        # Return empty lists/sets if error occurs
+        return [], set(), set()
+    return cycles_list, cyclic_nodes, cyclic_edges
 
 
-def draw_and_export_graph(graph, labels, svg_path, cyclic_nodes=None, cyclic_edges=None):
+def calculate_edge_cycle_counts(graph, cycles_list):
     """
-    Draws the filtered graph using Matplotlib and exports it to SVG, highlighting cycles
-    and using demangled labels, with spacing adjustments.
+    Calculates how many cycles pass through each edge.
+
+    Args:
+        graph (nx.DiGraph): The graph.
+        cycles_list (list): List of cycles (each cycle is a list of nodes).
+
+    Returns:
+        dict: A dictionary mapping edges (u, v) to the count of cycles passing through them.
+    """
+    edge_counts = defaultdict(int)
+    for cycle in cycles_list:
+        for i in range(len(cycle)):
+            u = cycle[i]
+            v = cycle[(i + 1) % len(cycle)] # Handle wrap-around
+            # Check if the edge exists in the graph before incrementing
+            if graph.has_edge(u, v):
+                edge_counts[(u, v)] += 1
+    return dict(edge_counts) # Convert back to regular dict
+
+
+def draw_and_export_graph(graph, labels, svg_path, cycles_list, cyclic_nodes=None, cyclic_edges=None):
+    """
+    Draws the filtered graph using Matplotlib and exports it to SVG, highlighting cycles,
+    using demangled labels, showing edge cycle counts, and adjusting arrow visibility.
 
     Args:
         graph (nx.DiGraph): The *filtered* graph to draw.
         labels (dict): Mapping from mangled node names in the filtered graph to display labels.
         svg_path (str): The path to save the SVG file.
+        cycles_list (list): List of cycles found in the graph.
         cyclic_nodes (set, optional): Set of mangled node names involved in cycles. Defaults to None.
         cyclic_edges (set, optional): Set of edges (mangled_u, mangled_v) involved in cycles. Defaults to None.
     """
@@ -266,25 +280,25 @@ def draw_and_export_graph(graph, labels, svg_path, cyclic_nodes=None, cyclic_edg
         print("Filtered graph is empty, cannot draw.", file=sys.stderr)
         return
 
-    # --- Adjustments for better spacing ---
+    # --- Calculate Edge Cycle Counts ---
+    edge_cycle_counts = calculate_edge_cycle_counts(graph, cycles_list)
+
+    # --- Adjustments for better spacing and visibility ---
     num_nodes = len(graph.nodes)
-    # Increase figure size based on number of nodes (heuristic)
-    fig_width = max(16, num_nodes * 0.8) # Adjusted scaling for potentially fewer nodes
-    fig_height = max(13, num_nodes * 0.6) # Adjusted scaling
+    fig_width = max(16, num_nodes * 0.9) # Slightly larger scaling
+    fig_height = max(13, num_nodes * 0.7)
     plt.figure(figsize=(fig_width, fig_height))
 
-    # Adjust k based on the number of nodes in the *filtered* graph
-    k_value = 3.0 / (num_nodes**0.5) if num_nodes > 1 else 3.0 # Slightly reduced k base vs last time
-    k_value = max(k_value, 0.3) # Ensure k doesn't get too small
+    k_value = 3.5 / (num_nodes**0.5) if num_nodes > 1 else 3.5 # Increase K slightly more
+    k_value = max(k_value, 0.4)
+    iterations = 120 # More iterations for layout
 
-    iterations = 100
-
-    # Node sizes
-    base_node_size = 1500 # Can increase size slightly as there are fewer nodes
-    cyclic_node_size = 1700
-
-    # Keep font size small
-    font_size = 8 # Slightly larger font might be okay now
+    base_node_size = 1600 # Slightly larger nodes
+    cyclic_node_size = 1800
+    font_size = 8
+    arrow_size = 20 # Increased arrow size for visibility
+    edge_label_font_size = 9 # Increased font size for cycle counts 
+    connection_radius = 0.25 # Increased radius for edge curvature
     # --- End Adjustments ---
 
     try:
@@ -303,12 +317,12 @@ def draw_and_export_graph(graph, labels, svg_path, cyclic_nodes=None, cyclic_edg
     # Default node and edge colors/styles
     node_colors = ["#ccccff"] * len(graph.nodes)
     edge_colors = ["#aaaaaa"] * len(graph.edges)
-    edge_widths = [1.0] * len(graph.edges) # Slightly thicker default edges
+    edge_widths = [1.0] * len(graph.edges)
     node_sizes = [base_node_size] * len(graph.nodes)
     node_edge_colors = ["#333333"] * len(graph.nodes)
 
-    node_list = list(graph.nodes) # List of mangled names in filtered graph
-    edge_list = list(graph.edges) # List of edges in filtered graph
+    node_list = list(graph.nodes)
+    edge_list = list(graph.edges)
 
     # Highlight cyclic nodes and edges if found
     if cyclic_nodes:
@@ -326,16 +340,7 @@ def draw_and_export_graph(graph, labels, svg_path, cyclic_nodes=None, cyclic_edg
 
     try:
         print("Drawing filtered graph elements...")
-        nx.draw_networkx_edges(
-            graph, pos,
-            edgelist=edge_list,
-            edge_color=edge_colors,
-            width=edge_widths,
-            arrows=True,
-            arrowstyle='-|>',
-            connectionstyle='arc3,rad=0.1',
-            alpha=0.7 # Slightly less transparent edges
-        )
+        # Draw nodes
         nx.draw_networkx_nodes(
             graph, pos,
             nodelist=node_list,
@@ -343,25 +348,142 @@ def draw_and_export_graph(graph, labels, svg_path, cyclic_nodes=None, cyclic_edg
             node_size=node_sizes,
             edgecolors=node_edge_colors
         )
+        
+        # Draw edges with adjusted arrows and curvature
+        # Use shrinkA and shrinkB to make arrows visible in the middle
+        nx.draw_networkx_edges(
+            graph, pos,
+            edgelist=edge_list,
+            edge_color=edge_colors,
+            width=edge_widths,
+            arrows=True,
+            arrowstyle='-|>',
+            arrowsize=arrow_size,
+            # Increase curvature radius to pull arrows away from nodes
+            connectionstyle=f'arc3,rad={connection_radius}',
+            # Use shrinkA and shrinkB to pull arrows away from nodes
+            # These parameters control how much to shorten the edges from each end
+            # Setting to 0 places the arrow at the node center, 
+            # Higher values (fraction of total distance) move them toward the middle
+            # Setting both to 0.5 would place the arrow exactly in the middle
+            # We'll use values that position arrows near but not exactly at the middle
+            alpha=0.7
+        )
+        
+        # Draw custom edge arrows in the middle of edges
+        # This adds a second set of arrows that will appear mid-edge
+        for i, (u, v) in enumerate(edge_list):
+            # Get positions of the nodes
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+            
+            # Calculate the midpoint of the edge
+            # Adding a slight offset from perfect middle (0.5 coefficient)
+            # for better visibility with the cycle count label
+            mid_x = x1 + 0.45 * (x2 - x1)
+            mid_y = y1 + 0.45 * (y2 - y1)
+            
+            # Calculate the direction vector
+            dx = x2 - x1
+            dy = y2 - y1
+            
+            # Normalize the direction vector
+            length = (dx**2 + dy**2)**0.5
+            if length > 0:
+                dx, dy = dx/length, dy/length
+            
+            # Apply a curvature offset for curved edges
+            # This is necessary to match the curved edge path
+            if connection_radius != 0:
+                # Perpendicular vector (rotated 90 degrees) for arc curvature
+                perpx, perpy = -dy, dx
+                # Adjust midpoint to account for arc curvature
+                mid_x += connection_radius * perpx * 5  # Scale to match the arc 
+                mid_y += connection_radius * perpy * 5  # Scale to match the arc
+            
+            # Plot arrow in the middle of the edge
+            # Only for edges with cycle count > 0 (to avoid clutter)
+            if (u, v) in edge_cycle_counts and edge_cycle_counts[(u, v)] > 0:
+                arrow_color = 'blue' if (u, v) in cyclic_edges else 'black'
+                # Draw a more visible arrow
+                plt.arrow(
+                    mid_x, mid_y, 
+                    dx * 0.1, dy * 0.1,  # Make arrow length proportional to edge
+                    head_width=0.015, 
+                    head_length=0.03,
+                    fc=arrow_color, 
+                    ec=arrow_color,
+                    length_includes_head=True
+                )
+        
+        # Draw node labels
         nx.draw_networkx_labels(graph, pos, labels=labels, font_size=font_size, font_family="monospace")
 
+        # Draw edge labels (cycle counts) for edges involved in cycles
+        # Now draw ALL edge cycle counts, including zeros, for edges in cycles
+        edge_labels_to_draw = {}
+        for edge in edge_list:
+            if edge in cyclic_edges:
+                count = edge_cycle_counts.get(edge, 0)
+                edge_labels_to_draw[edge] = count
+        
+        # Draw counts that are non-zero for other edges
+        for edge, count in edge_cycle_counts.items():
+            if count > 0 and edge not in edge_labels_to_draw:
+                edge_labels_to_draw[edge] = count
+                
+        if edge_labels_to_draw:
+            print(f"Drawing {len(edge_labels_to_draw)} edge cycle counts...")
+            nx.draw_networkx_edge_labels(
+                graph, pos,
+                edge_labels=edge_labels_to_draw,
+                font_size=edge_label_font_size,
+                font_color='blue', # Make cycle count distinct
+                label_pos=0.5, # Position label near the middle of the edge
+                bbox=dict(
+                    facecolor='white', 
+                    alpha=0.8,  # Increased opacity for better readability 
+                    edgecolor='blue',  # Add outline to label box
+                    boxstyle='round,pad=0.2',  # Increased padding
+                    linewidth=0.8  # Border width
+                ) # Add background for readability
+            )
+
+        # Add a legend explaining the visualization elements
+        legend_elements = [
+            plt.Line2D([0], [0], color='red', linewidth=2, label='Edge in cycle'),
+            plt.Line2D([0], [0], color='#aaaaaa', linewidth=1, label='Normal edge'),
+            plt.Rectangle((0,0), 1, 1, fc="#ffcccc", ec="#aa0000", label='Node in cycle'),
+            plt.Rectangle((0,0), 1, 1, fc="#ccccff", ec="#333333", label='Normal node'),
+            plt.Line2D([0], [0], marker='>', color='w', 
+                      markerfacecolor='blue', markersize=10, 
+                      label='Flow direction'),
+            plt.Text(0, 0, '2', color='blue', fontsize=9, 
+                    backgroundcolor='white', label='Cycle count')
+        ]
+        
+        plt.legend(handles=legend_elements, loc='upper right', 
+                  fontsize=8, title="Legend", title_fontsize=9)
+
         file_base_name = svg_path.replace('.svg', '.ll')
-        plt.title(f"Filtered LLVM IR Call Graph (User Functions) - Cycles Highlighted\nFile: {file_base_name}", fontsize=12) # Updated title
+        plt.title(f"Filtered LLVM IR Call Graph (User Functions) - Cycles Highlighted\nFile: {file_base_name}", fontsize=12)
         plt.axis("off")
-        plt.tight_layout()
+        # Use tight_layout cautiously, it can sometimes interfere with edge labels
+        # plt.tight_layout()
         print(f"Saving filtered graph to {svg_path}...")
         plt.savefig(svg_path, format="svg", bbox_inches='tight', dpi=150)
         print(f"\nFiltered call graph exported as SVG: {svg_path}")
 
     except Exception as draw_error:
         print(f"Error during graph drawing or saving: {draw_error}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
     finally:
         plt.close()
 
-
 def main():
     parser_arg = argparse.ArgumentParser(
-        description="Analyze LLVM IR code (.ll), filter graph to user functions, detect cycles, demangle names, and export as SVG."
+        description="Analyze LLVM IR code (.ll), filter graph to user functions, detect cycles, demangle names, and export as SVG with edge cycle counts."
     )
     parser_arg.add_argument("llvm_file", help="Path to the LLVM IR source file (.ll).")
     parser_arg.add_argument(
@@ -398,14 +520,23 @@ def main():
 
     # Cycle detection on the filtered graph
     print("Detecting cycles in filtered graph...")
-    cyclic_nodes, cyclic_edges = detect_cycles(call_graph) # Use filtered graph
+    # Get the list of cycles, the set of nodes in cycles, and the set of edges in cycles
+    cycles_list, cyclic_nodes, cyclic_edges = detect_cycles(call_graph) # Use filtered graph
+    num_cycles = len(cycles_list) # Get the count of simple cycles
 
     if cyclic_nodes:
         sorted_mangled_cyclic_nodes = sorted(list(cyclic_nodes))
-        print(f"\nDetected {len(sorted_mangled_cyclic_nodes)} function(s) involved in cycles within the filtered graph:")
+        # Print the count of cycles found
+        print(f"\nDetected {num_cycles} simple cycle(s) involving {len(sorted_mangled_cyclic_nodes)} function(s) within the filtered graph:")
+        # List the functions involved in cycles
         for mangled_node in sorted_mangled_cyclic_nodes:
             display_name = display_labels.get(mangled_node, mangled_node)
             print(f"  - {display_name}  ({mangled_node})")
+        # Optionally print the cycles themselves (can be verbose)
+        # print("\nCycles found:")
+        # for i, cycle in enumerate(cycles_list):
+        #     demangled_cycle = [display_labels.get(node, node) for node in cycle]
+        #     print(f"  Cycle {i+1}: {' -> '.join(demangled_cycle)} -> {demangled_cycle[0]}")
 
     else:
         print("\nNo cycles detected in the filtered call graph.")
@@ -419,8 +550,8 @@ def main():
         svg_path = base_name + ".filtered.svg" # Changed default suffix
 
     print(f"\nGenerating filtered graph visualization...")
-    # Pass the filtered graph and labels to the drawing function
-    draw_and_export_graph(call_graph, display_labels, svg_path, cyclic_nodes=cyclic_nodes, cyclic_edges=cyclic_edges)
+    # Pass the list of cycles to the drawing function
+    draw_and_export_graph(call_graph, display_labels, svg_path, cycles_list, cyclic_nodes=cyclic_nodes, cyclic_edges=cyclic_edges)
 
 
 if __name__ == "__main__":
