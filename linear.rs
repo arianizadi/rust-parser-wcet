@@ -7,6 +7,9 @@ fn main() {
 
 fn a() {
     println!("In a");
+    let mut x = 1;
+    x = x + 1;
+    println!("{}", x);
     b();
 }
 
