@@ -1,1 +1,8 @@
 *.ll
+*.s
+*.o
+*.out
+*.exe
+*.bin
+*.hex
+*.bin
