@@ -21,6 +21,7 @@ BASE_NAME=$(basename "$INPUT_FILE" .rs)
 # Create LLVM IR
 echo "Generating LLVM IR for $INPUT_FILE..."
 rustc --emit=llvm-ir "$INPUT_FILE" -o "$BASE_NAME.ll"
+llc -march=x86-64 -O0 -filetype=asm "$BASE_NAME.ll" -o "$BASE_NAME.s"
 
 if [ -f "$BASE_NAME.ll" ]; then
     echo "Successfully created $BASE_NAME.ll"
