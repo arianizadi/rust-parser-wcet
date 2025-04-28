@@ -127,6 +127,8 @@ def build_call_graph_from_ll(llvm_code, no_filter=False):
             keep_node = False
         elif raw_label.startswith("alloc::"):
             keep_node = False
+        elif raw_label.startswith("llvm."):
+            keep_node = False
         elif "{{closure}}" in raw_label:
             keep_node = False
         elif "<" in raw_label or ">" in raw_label:
@@ -515,35 +517,21 @@ def main():
     parser_arg = argparse.ArgumentParser(
         description="Analyze LLVM IR call graph, estimate WCET from Assembly, detect cycles, and export SVG."
     )
+    parser_arg.add_argument("asm_file", help="Path to the Assembly source file (.s).")
     parser_arg.add_argument("llvm_file", help="Path to the LLVM IR source file (.ll).")
-    parser_arg.add_argument(
-        "--asm-file",
-        dest="asm_file",
-        required=True,
-        help="Path to the corresponding Assembly source file (.s)."
-    )
-    parser_arg.add_argument(
-        "--svg", dest="svg_file", default=None,
-        help="Path to output SVG file (default: <llvm_file_base>.filtered.svg)"
-    )
     parser_arg.add_argument(
         "--no-filter",
         dest="no_filter",
         action="store_true",
         help="Disable all filtering of functions; include all nodes and edges in the call graph.",
     )
+    parser_arg.add_argument(
+        "--svg",
+        dest="svg_file",
+        default=None,
+        help="Path to output SVG file (default: <llvm_file_base>.filtered.svg)",
+    )
     args = parser_arg.parse_args()
-
-    # Read LLVM IR file
-    try:
-        with open(args.llvm_file, "r", encoding="utf-8") as f:
-            llvm_code = f.read()
-    except FileNotFoundError:
-        print(f"Error: LLVM file not found '{args.llvm_file}'", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading LLVM file '{args.llvm_file}': {e}", file=sys.stderr)
-        sys.exit(1)
 
     # Read Assembly file
     try:
@@ -556,6 +544,16 @@ def main():
         print(f"Error reading Assembly file '{args.asm_file}': {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Read LLVM IR file
+    try:
+        with open(args.llvm_file, "r", encoding="utf-8") as f:
+            llvm_code = f.read()
+    except FileNotFoundError:
+        print(f"Error: LLVM file not found '{args.llvm_file}'", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error reading LLVM file '{args.llvm_file}': {e}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"Parsing LLVM IR file: {args.llvm_file}...")
     try:
