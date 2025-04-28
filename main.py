@@ -12,60 +12,315 @@ import traceback
 from collections import defaultdict
 
 # Estimated costs based on typical x86-64 latencies (highly approximate)
-# Specific to instructions found in linear.s
 
 assembly_costs = {
-    # Stack Operations
-    "pushq": 1,  # Typically fast, might involve micro-ops for stack engine
-    "popq": 1,   # Typically fast
-
-    # Data Movement (Register/Immediate focused)
-    # Note: MOV involving memory (e.g., movq %rdi, (%rsp)) cost depends heavily on cache.
-    # Assuming ~1 cycle for reg-reg/imm-reg, higher for memory. We use a base cost here.
-    "movl": 1,
-    "movq": 1,
-    "movabsq": 1, # Move 64-bit immediate, usually fast
-    "movzbl": 1,  # Zero-extend byte to long, usually fast
-    "movslq": 1,  # Sign-extend long to quad, usually fast
-    "leaq": 1,   # Address calculation, usually 1 cycle latency
-
-    # Control Flow
-    "callq": 5,  # Mechanics of call/jump + potential pipeline effects. Indirect calls can be costlier. Cost of target function is separate.
-    "retq": 3,   # Mechanics of return, potential branch prediction interaction.
-    "jmp": 1,    # Unconditional jump (if predicted correctly). Mispredict penalty is high (~15-20+).
-    "jo": 1,     # Conditional jump (if predicted correctly). Mispredict penalty is high (~15-20+).
-
-    # Arithmetic / Logical
-    "addq": 1,
-    "subq": 1,   # Integer subtraction, typically 1 cycle latency
-    "xorl": 1,   # Bitwise XOR (often used to zero registers), typically 1 cycle latency
-    "incl": 1,   # Increment, typically 1 cycle latency
-
-    # Status Flags
-    "seto": 1,   # Set byte based on flag, typically fast
-    
-    # --- Placeholder for other common instructions (NOT explicitly in linear.s, but often relevant) ---
-    # "addq": 1, 
-    # "imulq": 3-5, # Integer Multiply
-    # "idivq": 10-40, # Integer Divide (highly variable)
-    # "cmpq": 1, # Comparison
-    # "testq": 1, # Bitwise test
-    # --- Memory explicit variants ---
-    # "mov_mem_load": 100, # Example cost assuming L3 miss (as per your earlier WCET idea)
-    # "mov_mem_store": 100, # Example cost assuming L3 miss
+    # --- Data Movement Instructions ---
+    "movb": 1,  # Move byte (reg/imm/mem*)
+    "movw": 1,  # Move word (reg/imm/mem*)
+    "movl": 1,  # Move doubleword (reg/imm/mem*)
+    "movq": 1,  # Move quadword (reg/imm/mem*) - *Memory ops depend heavily on cache (~3-5+ cycles L1 hit)
+    "movabsq": 1,  # Move 64-bit immediate to register
+    "movzbw": 1,  # Move byte to word with zero-extend
+    "movzbl": 1,  # Move byte to doubleword with zero-extend
+    "movzbq": 1,  # Move byte to quadword with zero-extend
+    "movzwl": 1,  # Move word to doubleword with zero-extend
+    "movzwq": 1,  # Move word to quadword with zero-extend
+    "movzlq": 1,  # Move doubleword to quadword with zero-extend (implicit in movl to 64-bit reg)
+    "movsbw": 1,  # Move byte to word with sign-extend
+    "movsbl": 1,  # Move byte to doubleword with sign-extend
+    "movsbq": 1,  # Move byte to quadword with sign-extend
+    "movswl": 1,  # Move word to doubleword with sign-extend
+    "movswq": 1,  # Move word to quadword with sign-extend
+    "movslq": 1,  # Move doubleword to quadword with sign-extend
+    "leaq": 1,  # Load Effective Address (address calculation, often used for arithmetic)
+    "cmove": 2,  # Conditional move if equal (example CMOVcc) - Other CMOVcc are similar
+    "cmovne": 2,  # Conditional move if not equal
+    "cmovl": 2,  # Conditional move if less
+    "cmovg": 2,  # Conditional move if greater
+    "cmovle": 2,  # Conditional move if less or equal
+    "cmovge": 2,  # Conditional move if greater or equal
+    "cmovb": 2,  # Conditional move if below (unsigned)
+    "cmova": 2,  # Conditional move if above (unsigned)
+    "cmovbe": 2,  # Conditional move if below or equal (unsigned)
+    "cmovae": 2,  # Conditional move if above or equal (unsigned)
+    "cmovs": 2,  # Conditional move if sign
+    "cmovns": 2,  # Conditional move if not sign
+    "cmovp": 2,  # Conditional move if parity
+    "cmovnp": 2,  # Conditional move if not parity
+    "cmovo": 2,  # Conditional move if overflow
+    "cmovno": 2,  # Conditional move if not overflow
+    "xchgb": 2,  # Exchange byte (reg-reg)
+    "xchgw": 2,  # Exchange word (reg-reg)
+    "xchgl": 2,  # Exchange doubleword (reg-reg)
+    "xchgq": 2,  # Exchange quadword (reg-reg) - Memory variant is much slower (atomic)
+    # --- Stack Instructions ---
+    "pushq": 2,  # Push quadword onto stack
+    "popq": 2,  # Pop quadword from stack
+    "pushfq": 5,  # Push RFLAGS register
+    "popfq": 5,  # Pop RFLAGS register
+    "enter": 10,  # Create stack frame (often slower than manual setup)
+    "leave": 2,  # Destroy stack frame (mov rsp, rbp; pop rbp)
+    # --- Integer Arithmetic Instructions ---
+    "addb": 1,  # Add byte
+    "addw": 1,  # Add word
+    "addl": 1,  # Add doubleword
+    "addq": 1,  # Add quadword
+    "subb": 1,  # Subtract byte
+    "subw": 1,  # Subtract word
+    "subl": 1,  # Subtract doubleword
+    "subq": 1,  # Subtract quadword
+    "incb": 1,  # Increment byte
+    "incw": 1,  # Increment word
+    "incl": 1,  # Increment doubleword
+    "incq": 1,  # Increment quadword
+    "decb": 1,  # Decrement byte
+    "decw": 1,  # Decrement word
+    "decl": 1,  # Decrement doubleword
+    "decq": 1,  # Decrement quadword
+    "negb": 1,  # Negate byte
+    "negw": 1,  # Negate word
+    "negl": 1,  # Negate doubleword
+    "negq": 1,  # Negate quadword
+    "imulb": 3,  # Signed multiply (implicit AX = AL * src)
+    "imulw": 3,  # Signed multiply (implicit DX:AX = AX * src)
+    "imull": 3,  # Signed multiply (implicit EDX:EAX = EAX * src)
+    "imulq": 3,  # Signed multiply (implicit RDX:RAX = RAX * src) - 2/3 operand forms also ~3 cycles latency
+    "mulb": 3,  # Unsigned multiply (implicit AX = AL * src)
+    "mulw": 3,  # Unsigned multiply (implicit DX:AX = AX * src)
+    "mull": 3,  # Unsigned multiply (implicit EDX:EAX = EAX * src)
+    "mulq": 3,  # Unsigned multiply (implicit RDX:RAX = RAX * src)
+    "idivb": 20,  # Signed divide (implicit AL=AX/src, AH=rem) - **SLOW/VARIABLE**
+    "idivw": 25,  # Signed divide (implicit AX=DX:AX/src, DX=rem) - **SLOW/VARIABLE**
+    "idivl": 30,  # Signed divide (implicit EAX=EDX:EAX/src, EDX=rem) - **SLOW/VARIABLE**
+    "idivq": 40,  # Signed divide (implicit RAX=RDX:RAX/src, RDX=rem) - **VERY SLOW/VARIABLE** (~20-80+)
+    "divb": 20,  # Unsigned divide (implicit AL=AX/src, AH=rem) - **SLOW/VARIABLE**
+    "divw": 25,  # Unsigned divide (implicit AX=DX:AX/src, DX=rem) - **SLOW/VARIABLE**
+    "divl": 30,  # Unsigned divide (implicit EAX=EDX:EAX/src, EDX=rem) - **SLOW/VARIABLE**
+    "divq": 40,  # Unsigned divide (implicit RAX=RDX:RAX/src, RDX=rem) - **VERY SLOW/VARIABLE** (~20-80+)
+    "cbw": 1,  # Convert byte to word (sign extend AL->AX)
+    "cwde": 1,  # Convert word to doubleword (sign extend AX->EAX)
+    "cdqe": 1,  # Convert doubleword to quadword (sign extend EAX->RAX)
+    "cwd": 1,  # Convert word to doubleword (sign extend AX->DX:AX for idivw)
+    "cdq": 1,  # Convert doubleword to quadword (sign extend EAX->EDX:EAX for idivl)
+    "cqo": 1,  # Convert quadword to octoword (sign extend RAX->RDX:RAX for idivq)
+    # --- Logic and Bitwise Instructions ---
+    "andb": 1,  # Bitwise AND byte
+    "andw": 1,  # Bitwise AND word
+    "andl": 1,  # Bitwise AND doubleword
+    "andq": 1,  # Bitwise AND quadword
+    "orb": 1,  # Bitwise OR byte
+    "orw": 1,  # Bitwise OR word
+    "orl": 1,  # Bitwise OR doubleword
+    "orq": 1,  # Bitwise OR quadword
+    "xorb": 1,  # Bitwise XOR byte
+    "xorw": 1,  # Bitwise XOR word
+    "xorl": 1,  # Bitwise XOR doubleword
+    "xorq": 1,  # Bitwise XOR quadword
+    "notb": 1,  # Bitwise NOT byte
+    "notw": 1,  # Bitwise NOT word
+    "notl": 1,  # Bitwise NOT doubleword
+    "notq": 1,  # Bitwise NOT quadword
+    "shlb": 1,  # Shift Left byte
+    "shlw": 1,  # Shift Left word
+    "shll": 1,  # Shift Left doubleword
+    "shlq": 1,  # Shift Left quadword (SAL is same opcode)
+    "shrb": 1,  # Logical Shift Right byte
+    "shrw": 1,  # Logical Shift Right word
+    "shrl": 1,  # Logical Shift Right doubleword
+    "shrq": 1,  # Logical Shift Right quadword
+    "sarb": 1,  # Arithmetic Shift Right byte
+    "sarw": 1,  # Arithmetic Shift Right word
+    "sarl": 1,  # Arithmetic Shift Right doubleword
+    "sarq": 1,  # Arithmetic Shift Right quadword
+    "rolb": 1,  # Rotate Left byte
+    "rolw": 1,  # Rotate Left word
+    "roll": 1,  # Rotate Left doubleword
+    "rolq": 1,  # Rotate Left quadword
+    "rorb": 1,  # Rotate Right byte
+    "rorw": 1,  # Rotate Right word
+    "rorl": 1,  # Rotate Right doubleword
+    "rorq": 1,  # Rotate Right quadword
+    "rclb": 2,  # Rotate Carry Left byte
+    "rclw": 2,  # Rotate Carry Left word
+    "rcll": 2,  # Rotate Carry Left doubleword
+    "rclq": 2,  # Rotate Carry Left quadword
+    "rcrb": 2,  # Rotate Carry Right byte
+    "rcrw": 2,  # Rotate Carry Right word
+    "rcrl": 2,  # Rotate Carry Right doubleword
+    "rcrq": 2,  # Rotate Carry Right quadword
+    "testb": 1,  # Logical AND, sets flags
+    "testw": 1,  # Logical AND, sets flags
+    "testl": 1,  # Logical AND, sets flags
+    "testq": 1,  # Logical AND, sets flags
+    "cmpb": 1,  # Compare bytes, sets flags
+    "cmpw": 1,  # Compare words, sets flags
+    "cmpl": 1,  # Compare doublewords, sets flags
+    "cmpq": 1,  # Compare quadwords, sets flags
+    "sete": 1,  # Set byte if equal (ZF=1) (Example SETcc) - others similar cost
+    "setne": 1,  # Set byte if not equal (ZF=0)
+    "setl": 1,  # Set byte if less (SF!=OF)
+    "setg": 1,  # Set byte if greater (ZF=0 && SF==OF)
+    "setle": 1,  # Set byte if less or equal (ZF=1 || SF!=OF)
+    "setge": 1,  # Set byte if greater or equal (SF==OF)
+    "setb": 1,  # Set byte if below (CF=1)
+    "seta": 1,  # Set byte if above (CF=0 && ZF=0)
+    "setbe": 1,  # Set byte if below or equal (CF=1 || ZF=1)
+    "setae": 1,  # Set byte if above or equal (CF=0)
+    "sets": 1,  # Set byte if sign (SF=1)
+    "setns": 1,  # Set byte if not sign (SF=0)
+    "setp": 1,  # Set byte if parity (PF=1)
+    "setnp": 1,  # Set byte if not parity (PF=0)
+    "seto": 1,  # Set byte if overflow (OF=1)
+    "setno": 1,  # Set byte if not overflow (OF=0)
+    "bt": 2,  # Bit Test
+    "bts": 2,  # Bit Test and Set
+    "btr": 2,  # Bit Test and Reset
+    "btc": 2,  # Bit Test and Complement
+    "bsf": 3,  # Bit Scan Forward
+    "bsr": 3,  # Bit Scan Reverse
+    "popcnt": 3,  # Population Count (count set bits) - modern CPUs
+    "lzcnt": 3,  # Leading Zero Count
+    "tzcnt": 3,  # Trailing Zero Count
+    # --- Control Flow Instructions ---
+    "jmp": 1,  # Unconditional Jump (cost assumes predicted; mispredict ~15-25+)
+    "je": 1,  # Jump if equal (example Jcc) - cost assumes predicted; mispredict ~15-25+
+    "jne": 1,  # Jump if not equal
+    "jl": 1,  # Jump if less
+    "jg": 1,  # Jump if greater
+    "jle": 1,  # Jump if less or equal
+    "jge": 1,  # Jump if greater or equal
+    "jb": 1,  # Jump if below
+    "ja": 1,  # Jump if above
+    "jbe": 1,  # Jump if below or equal
+    "jae": 1,  # Jump if above or equal
+    "js": 1,  # Jump if sign
+    "jns": 1,  # Jump if not sign
+    "jp": 1,  # Jump if parity
+    "jnp": 1,  # Jump if not parity
+    "jo": 1,  # Jump if overflow
+    "jno": 1,  # Jump if not overflow
+    "callq": 5,  # Procedure Call (base cost + branch prediction effects)
+    "retq": 3,  # Return from Procedure (base cost + branch prediction effects)
+    "loop": 6,  # Decrement CX and loop if not zero
+    "loope": 6,  # Decrement CX and loop if equal
+    "loopne": 6,  # Decrement CX and loop if not equal
+    # --- Floating Point & SIMD (SSE/AVX - Selected Scalar & Packed) ---
+    "movss": 1,  # Move Scalar Single FP (reg/imm/mem*)
+    "movsd": 1,  # Move Scalar Double FP (reg/imm/mem*)
+    "movaps": 1,  # Move Aligned Packed Single FP (reg/mem*)
+    "movapd": 1,  # Move Aligned Packed Double FP (reg/mem*)
+    "movups": 2,  # Move Unaligned Packed Single FP (reg/mem*) - Slightly higher penalty if unaligned
+    "movupd": 2,  # Move Unaligned Packed Double FP (reg/mem*) - Slightly higher penalty if unaligned
+    "movdqa": 1,  # Move Aligned Double Quadword (128-bit integer)
+    "movdqu": 2,  # Move Unaligned Double Quadword (128-bit integer)
+    "addss": 4,  # Add Scalar Single FP
+    "addsd": 4,  # Add Scalar Double FP
+    "addps": 4,  # Add Packed Single FP
+    "addpd": 4,  # Add Packed Double FP
+    "subss": 4,  # Subtract Scalar Single FP
+    "subsd": 4,  # Subtract Scalar Double FP
+    "subps": 4,  # Subtract Packed Single FP
+    "subpd": 4,  # Subtract Packed Double FP
+    "mulss": 4,  # Multiply Scalar Single FP
+    "mulsd": 4,  # Multiply Scalar Double FP
+    "mulps": 4,  # Multiply Packed Single FP
+    "mulpd": 4,  # Multiply Packed Double FP
+    "divss": 15,  # Divide Scalar Single FP - **Slow/Variable**
+    "divsd": 20,  # Divide Scalar Double FP - **Slow/Variable**
+    "divps": 15,  # Divide Packed Single FP - **Slow/Variable**
+    "divpd": 20,  # Divide Packed Double FP - **Slow/Variable**
+    "sqrtss": 15,  # Square Root Scalar Single FP - **Slow/Variable**
+    "sqrtsd": 20,  # Square Root Scalar Double FP - **Slow/Variable**
+    "sqrtps": 15,  # Square Root Packed Single FP - **Slow/Variable**
+    "sqrtpd": 20,  # Square Root Packed Double FP - **Slow/Variable**
+    "ucomiss": 3,  # Unordered Compare Scalar Single FP (sets EFLAGS)
+    "ucomisd": 3,  # Unordered Compare Scalar Double FP (sets EFLAGS)
+    "cmpps": 3,  # Compare Packed Single FP (result in register/mask)
+    "cmppd": 3,  # Compare Packed Double FP (result in register/mask)
+    "cvtsi2ss": 5,  # Convert Int to Scalar Single FP
+    "cvtsi2sd": 5,  # Convert Int to Scalar Double FP
+    "cvttss2si": 5,  # Convert Truncated Scalar Single FP to Int
+    "cvttsd2si": 5,  # Convert Truncated Scalar Double FP to Int
+    "shufps": 2,  # Shuffle Packed Single FP
+    "shufpd": 2,  # Shuffle Packed Double FP
+    "paddb": 1,  # Packed Add Byte (MMX/SSE/AVX)
+    "paddw": 1,  # Packed Add Word
+    "paddd": 1,  # Packed Add Doubleword
+    "paddq": 1,  # Packed Add Quadword
+    "psubb": 1,  # Packed Subtract Byte
+    "psubw": 1,  # Packed Subtract Word
+    "psubd": 1,  # Packed Subtract Doubleword
+    "psubq": 1,  # Packed Subtract Quadword
+    "pand": 1,  # Packed Bitwise AND
+    "por": 1,  # Packed Bitwise OR
+    "pxor": 1,  # Packed Bitwise XOR
+    # --- String Instructions ---
+    # Base cost per element; REP prefix makes total cost highly variable
+    "movsb": 8,  # Move byte from DS:[RSI] to ES:[RDI]
+    "movsw": 8,  # Move word
+    "movsl": 8,  # Move doubleword
+    "movsq": 8,  # Move quadword
+    "cmpsb": 8,  # Compare byte DS:[RSI] with ES:[RDI]
+    "cmpsw": 8,  # Compare word
+    "cmpsl": 8,  # Compare doubleword
+    "cmpsq": 8,  # Compare quadword
+    "stosb": 8,  # Store AL to ES:[RDI]
+    "stosw": 8,  # Store AX
+    "stosl": 8,  # Store EAX
+    "stosq": 8,  # Store RAX
+    "lodsb": 8,  # Load byte from DS:[RSI] to AL
+    "lodsw": 8,  # Load word to AX
+    "lodsl": 8,  # Load doubleword to EAX
+    "lodsq": 8,  # Load quadword to RAX
+    "scasb": 8,  # Scan AL against ES:[RDI]
+    "scasw": 8,  # Scan AX
+    "scasl": 8,  # Scan EAX
+    "scasq": 8,  # Scan RAX
+    # --- System and Miscellaneous Instructions ---
+    "syscall": 1000,  # Fast System Call - **Very Slow (Kernel Transition)**
+    "sysenter": 1000,  # Legacy System Call - **Very Slow**
+    "sysexit": 1000,  # Legacy System Return - **Very Slow**
+    "int": 1000,  # Software Interrupt - **Very Slow (Handler Dependent)**
+    "cpuid": 100,  # CPU Identification - Slow, Serializing
+    "rdtsc": 30,  # Read Time-Stamp Counter - Serializing effects
+    "rdtscp": 30,  # Read Time-Stamp Counter and Processor ID - Serializing effects
+    "nop": 1,  # No Operation (often 0 cycles effective)
+    "pause": 40,  # Spin Loop Hint (variable, yields to hyperthread)
+    "hlt": 1000,  # Halt - Stops CPU until interrupt (cost is context-dependent)
+    "lock": 15,  # Atomic Prefix (Adds significant cost to the following instruction) - **Base Cost Added**
+    "cmpxchgb": 15,  # Compare and Exchange byte (use with LOCK)
+    "cmpxchgw": 15,  # Compare and Exchange word
+    "cmpxchgl": 15,  # Compare and Exchange doubleword
+    "cmpxchgq": 15,  # Compare and Exchange quadword
+    "xaddb": 15,  # Exchange and Add byte (use with LOCK)
+    "xaddw": 15,  # Exchange and Add word
+    "xaddl": 15,  # Exchange and Add doubleword
+    "xaddq": 15,  # Exchange and Add quadword
+    "lfence": 20,  # Load Fence
+    "sfence": 20,  # Store Fence
+    "mfence": 30,  # Memory Fence (Load + Store)
 }
 
 def demangle_name(mangled_name):
+    """
+    Demangle a C++/Rust mangled symbol name, and clean up Rust hash suffixes and closure/generic markers.
+    """
     if not mangled_name:
         return ""
     name_to_demangle = mangled_name.lstrip('@')
     try:
         demangled = cxxfilt.demangle(name_to_demangle)
+        # Remove Rust hash suffixes (e.g., ::h1234567890abcdefE)
         demangled = re.sub(r'::h[0-9a-f]{16}E$', '', demangled)
+        # Remove Rust closure markers
+        demangled = re.sub(r"\{\{closure\}\}", "", demangled)
+        # Remove Rust generator markers
+        demangled = re.sub(r"\{\{generator\}\}", "", demangled)
+        # Remove trailing whitespace
+        demangled = demangled.strip()
         return demangled
     except Exception:
         return name_to_demangle
-
 
 def parse_llvm_ir(llvm_code):
     functions = {}
@@ -94,6 +349,26 @@ def parse_llvm_ir(llvm_code):
     return functions, calls
 
 
+def _is_rust_stdlib_or_core(label):
+    # Returns True if the demangled label is from Rust std/core/alloc or LLVM intrinsics
+    return (
+        label.startswith("std::")
+        or label.startswith("core::")
+        or label.startswith("alloc::")
+        or label.startswith("llvm.")
+    )
+
+
+def _is_rust_closure_or_generator(label):
+    # Returns True if the demangled label contains closure or generator markers
+    return "{{closure}}" in label or "{{generator}}" in label
+
+
+def _is_rust_generic(label):
+    # Returns True if the demangled label contains generic angle brackets (not for LLVM intrinsics)
+    return ("<" in label and ">" in label) and not label.startswith("llvm.")
+
+
 def build_call_graph_from_ll(llvm_code, no_filter=False):
     functions, calls = parse_llvm_ir(llvm_code)
     full_graph = nx.DiGraph()
@@ -112,32 +387,37 @@ def build_call_graph_from_ll(llvm_code, no_filter=False):
     if no_filter:
         print("\n--no-filter specified: No filtering of nodes will be performed.")
         return full_graph, full_labels
+
     filtered_graph = nx.DiGraph()
     filtered_display_labels = {}
-    print("\nFiltering nodes (keeping non-stdlib, non-closure, non-generic, demangled names):")
+    print(
+        "\nFiltering nodes (excluding std/core/alloc, LLVM intrinsics, closures, and generics):"
+    )
     kept_nodes = 0
     filtered_out_nodes = 0
     for node, raw_label in full_labels.items():
         keep_node = True
-        if raw_label.startswith("_ZN"):
+        # Exclude Rust stdlib/core/alloc and LLVM intrinsics
+        if _is_rust_stdlib_or_core(raw_label):
             keep_node = False
-        elif raw_label.startswith("std::"):
+        # Exclude closures and generators
+        elif _is_rust_closure_or_generator(raw_label):
             keep_node = False
-        elif raw_label.startswith("core::"):
+        # Exclude generics (angle brackets) except for LLVM intrinsics
+        elif _is_rust_generic(raw_label):
             keep_node = False
-        elif raw_label.startswith("alloc::"):
+        # Exclude unmangled names that look like _ZN... (Rust/C++ mangling)
+        elif raw_label.startswith("_ZN"):
             keep_node = False
-        elif raw_label.startswith("llvm."):
-            keep_node = False
-        elif "{{closure}}" in raw_label:
-            keep_node = False
-        elif "<" in raw_label or ">" in raw_label:
-            if not raw_label.startswith("llvm."):
-                keep_node = False
         if keep_node:
             filtered_graph.add_node(node)
             simplified_label = raw_label
+            # Remove Rust trait-as-impl prefix (e.g., <T as Trait>::)
             simplified_label = re.sub(r'<.* as .*>::', '', simplified_label)
+            # Remove generic parameters for display clarity (keep only the function name)
+            simplified_label = re.sub(r"<.*?>", "", simplified_label)
+            # Remove extra whitespace
+            simplified_label = simplified_label.strip()
             filtered_display_labels[node] = simplified_label
             kept_nodes += 1
         else:
@@ -160,7 +440,6 @@ def build_call_graph_from_ll(llvm_code, no_filter=False):
             if node in filtered_display_labels:
                 del filtered_display_labels[node]
     return filtered_graph, filtered_display_labels
-
 
 def detect_cycles(graph):
     cycles_list = []
