@@ -543,9 +543,9 @@ def draw_and_export_graph(graph, labels, svg_path, cycles_list, llvm_code, cycli
             # Prepare label text
             if node in wcet_estimates:
                 wcet = wcet_estimates[node]
-                label_text = f"WCET: ~{wcet}" # Shorter label
+                label_text = f"CPU Cycles: ~{wcet}" # Shorter label
             else:
-                label_text = "WCET: N/A" # Indicate if estimation failed
+                label_text = "CPU Cycles: N/A" # Indicate if estimation failed
 
             # Draw the WCET label with a background box
             plt.text(
