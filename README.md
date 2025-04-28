@@ -27,4 +27,6 @@ Run the script from your terminal, providing the path to the LLVM IR file (`.ll`
 ```bash
 ./create_ir.sh linear.rs
 python3 main.py linear.ll
+------------ or ---------------------
+python3 main.py linear.ll --no-filter
 ```
