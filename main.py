@@ -14,291 +14,290 @@ from collections import defaultdict
 # Estimated costs based on typical x86-64 latencies (highly approximate)
 
 assembly_costs = {
-    # --- Data Movement Instructions ---
-    "movb": 1,  # Move byte (reg/imm/mem*)
-    "movw": 1,  # Move word (reg/imm/mem*)
-    "movl": 1,  # Move doubleword (reg/imm/mem*)
-    "movq": 1,  # Move quadword (reg/imm/mem*) - *Memory ops depend heavily on cache (~3-5+ cycles L1 hit)
-    "movabsq": 1,  # Move 64-bit immediate to register
-    "movzbw": 1,  # Move byte to word with zero-extend
-    "movzbl": 1,  # Move byte to doubleword with zero-extend
-    "movzbq": 1,  # Move byte to quadword with zero-extend
-    "movzwl": 1,  # Move word to doubleword with zero-extend
-    "movzwq": 1,  # Move word to quadword with zero-extend
-    "movzlq": 1,  # Move doubleword to quadword with zero-extend (implicit in movl to 64-bit reg)
-    "movsbw": 1,  # Move byte to word with sign-extend
-    "movsbl": 1,  # Move byte to doubleword with sign-extend
-    "movsbq": 1,  # Move byte to quadword with sign-extend
-    "movswl": 1,  # Move word to doubleword with sign-extend
-    "movswq": 1,  # Move word to quadword with sign-extend
-    "movslq": 1,  # Move doubleword to quadword with sign-extend
-    "leaq": 1,  # Load Effective Address (address calculation, often used for arithmetic)
-    "cmove": 2,  # Conditional move if equal (example CMOVcc) - Other CMOVcc are similar
-    "cmovne": 2,  # Conditional move if not equal
-    "cmovl": 2,  # Conditional move if less
-    "cmovg": 2,  # Conditional move if greater
-    "cmovle": 2,  # Conditional move if less or equal
-    "cmovge": 2,  # Conditional move if greater or equal
-    "cmovb": 2,  # Conditional move if below (unsigned)
-    "cmova": 2,  # Conditional move if above (unsigned)
-    "cmovbe": 2,  # Conditional move if below or equal (unsigned)
-    "cmovae": 2,  # Conditional move if above or equal (unsigned)
-    "cmovs": 2,  # Conditional move if sign
-    "cmovns": 2,  # Conditional move if not sign
-    "cmovp": 2,  # Conditional move if parity
-    "cmovnp": 2,  # Conditional move if not parity
-    "cmovo": 2,  # Conditional move if overflow
-    "cmovno": 2,  # Conditional move if not overflow
-    "xchgb": 2,  # Exchange byte (reg-reg)
-    "xchgw": 2,  # Exchange word (reg-reg)
-    "xchgl": 2,  # Exchange doubleword (reg-reg)
-    "xchgq": 2,  # Exchange quadword (reg-reg) - Memory variant is much slower (atomic)
-    # --- Stack Instructions ---
-    "pushq": 2,  # Push quadword onto stack
-    "popq": 2,  # Pop quadword from stack
-    "pushfq": 5,  # Push RFLAGS register
-    "popfq": 5,  # Pop RFLAGS register
-    "enter": 10,  # Create stack frame (often slower than manual setup)
-    "leave": 2,  # Destroy stack frame (mov rsp, rbp; pop rbp)
-    # --- Integer Arithmetic Instructions ---
-    "addb": 1,  # Add byte
-    "addw": 1,  # Add word
-    "addl": 1,  # Add doubleword
-    "addq": 1,  # Add quadword
-    "subb": 1,  # Subtract byte
-    "subw": 1,  # Subtract word
-    "subl": 1,  # Subtract doubleword
-    "subq": 1,  # Subtract quadword
-    "incb": 1,  # Increment byte
-    "incw": 1,  # Increment word
-    "incl": 1,  # Increment doubleword
-    "incq": 1,  # Increment quadword
-    "decb": 1,  # Decrement byte
-    "decw": 1,  # Decrement word
-    "decl": 1,  # Decrement doubleword
-    "decq": 1,  # Decrement quadword
-    "negb": 1,  # Negate byte
-    "negw": 1,  # Negate word
-    "negl": 1,  # Negate doubleword
-    "negq": 1,  # Negate quadword
-    "imulb": 3,  # Signed multiply (implicit AX = AL * src)
-    "imulw": 3,  # Signed multiply (implicit DX:AX = AX * src)
-    "imull": 3,  # Signed multiply (implicit EDX:EAX = EAX * src)
-    "imulq": 3,  # Signed multiply (implicit RDX:RAX = RAX * src) - 2/3 operand forms also ~3 cycles latency
-    "mulb": 3,  # Unsigned multiply (implicit AX = AL * src)
-    "mulw": 3,  # Unsigned multiply (implicit DX:AX = AX * src)
-    "mull": 3,  # Unsigned multiply (implicit EDX:EAX = EAX * src)
-    "mulq": 3,  # Unsigned multiply (implicit RDX:RAX = RAX * src)
-    "idivb": 20,  # Signed divide (implicit AL=AX/src, AH=rem) - **SLOW/VARIABLE**
-    "idivw": 25,  # Signed divide (implicit AX=DX:AX/src, DX=rem) - **SLOW/VARIABLE**
-    "idivl": 30,  # Signed divide (implicit EAX=EDX:EAX/src, EDX=rem) - **SLOW/VARIABLE**
-    "idivq": 40,  # Signed divide (implicit RAX=RDX:RAX/src, RDX=rem) - **VERY SLOW/VARIABLE** (~20-80+)
-    "divb": 20,  # Unsigned divide (implicit AL=AX/src, AH=rem) - **SLOW/VARIABLE**
-    "divw": 25,  # Unsigned divide (implicit AX=DX:AX/src, DX=rem) - **SLOW/VARIABLE**
-    "divl": 30,  # Unsigned divide (implicit EAX=EDX:EAX/src, EDX=rem) - **SLOW/VARIABLE**
-    "divq": 40,  # Unsigned divide (implicit RAX=RDX:RAX/src, RDX=rem) - **VERY SLOW/VARIABLE** (~20-80+)
-    "cbw": 1,  # Convert byte to word (sign extend AL->AX)
-    "cwde": 1,  # Convert word to doubleword (sign extend AX->EAX)
-    "cdqe": 1,  # Convert doubleword to quadword (sign extend EAX->RAX)
-    "cwd": 1,  # Convert word to doubleword (sign extend AX->DX:AX for idivw)
-    "cdq": 1,  # Convert doubleword to quadword (sign extend EAX->EDX:EAX for idivl)
-    "cqo": 1,  # Convert quadword to octoword (sign extend RAX->RDX:RAX for idivq)
-    # --- Logic and Bitwise Instructions ---
-    "andb": 1,  # Bitwise AND byte
-    "andw": 1,  # Bitwise AND word
-    "andl": 1,  # Bitwise AND doubleword
-    "andq": 1,  # Bitwise AND quadword
-    "orb": 1,  # Bitwise OR byte
-    "orw": 1,  # Bitwise OR word
-    "orl": 1,  # Bitwise OR doubleword
-    "orq": 1,  # Bitwise OR quadword
-    "xorb": 1,  # Bitwise XOR byte
-    "xorw": 1,  # Bitwise XOR word
-    "xorl": 1,  # Bitwise XOR doubleword
-    "xorq": 1,  # Bitwise XOR quadword
-    "notb": 1,  # Bitwise NOT byte
-    "notw": 1,  # Bitwise NOT word
-    "notl": 1,  # Bitwise NOT doubleword
-    "notq": 1,  # Bitwise NOT quadword
-    "shlb": 1,  # Shift Left byte
-    "shlw": 1,  # Shift Left word
-    "shll": 1,  # Shift Left doubleword
-    "shlq": 1,  # Shift Left quadword (SAL is same opcode)
-    "shrb": 1,  # Logical Shift Right byte
-    "shrw": 1,  # Logical Shift Right word
-    "shrl": 1,  # Logical Shift Right doubleword
-    "shrq": 1,  # Logical Shift Right quadword
-    "sarb": 1,  # Arithmetic Shift Right byte
-    "sarw": 1,  # Arithmetic Shift Right word
-    "sarl": 1,  # Arithmetic Shift Right doubleword
-    "sarq": 1,  # Arithmetic Shift Right quadword
-    "rolb": 1,  # Rotate Left byte
-    "rolw": 1,  # Rotate Left word
-    "roll": 1,  # Rotate Left doubleword
-    "rolq": 1,  # Rotate Left quadword
-    "rorb": 1,  # Rotate Right byte
-    "rorw": 1,  # Rotate Right word
-    "rorl": 1,  # Rotate Right doubleword
-    "rorq": 1,  # Rotate Right quadword
-    "rclb": 2,  # Rotate Carry Left byte
-    "rclw": 2,  # Rotate Carry Left word
-    "rcll": 2,  # Rotate Carry Left doubleword
-    "rclq": 2,  # Rotate Carry Left quadword
-    "rcrb": 2,  # Rotate Carry Right byte
-    "rcrw": 2,  # Rotate Carry Right word
-    "rcrl": 2,  # Rotate Carry Right doubleword
-    "rcrq": 2,  # Rotate Carry Right quadword
-    "testb": 1,  # Logical AND, sets flags
-    "testw": 1,  # Logical AND, sets flags
-    "testl": 1,  # Logical AND, sets flags
-    "testq": 1,  # Logical AND, sets flags
-    "cmpb": 1,  # Compare bytes, sets flags
-    "cmpw": 1,  # Compare words, sets flags
-    "cmpl": 1,  # Compare doublewords, sets flags
-    "cmpq": 1,  # Compare quadwords, sets flags
-    "sete": 1,  # Set byte if equal (ZF=1) (Example SETcc) - others similar cost
-    "setne": 1,  # Set byte if not equal (ZF=0)
-    "setl": 1,  # Set byte if less (SF!=OF)
-    "setg": 1,  # Set byte if greater (ZF=0 && SF==OF)
-    "setle": 1,  # Set byte if less or equal (ZF=1 || SF!=OF)
-    "setge": 1,  # Set byte if greater or equal (SF==OF)
-    "setb": 1,  # Set byte if below (CF=1)
-    "seta": 1,  # Set byte if above (CF=0 && ZF=0)
-    "setbe": 1,  # Set byte if below or equal (CF=1 || ZF=1)
-    "setae": 1,  # Set byte if above or equal (CF=0)
-    "sets": 1,  # Set byte if sign (SF=1)
-    "setns": 1,  # Set byte if not sign (SF=0)
-    "setp": 1,  # Set byte if parity (PF=1)
-    "setnp": 1,  # Set byte if not parity (PF=0)
-    "seto": 1,  # Set byte if overflow (OF=1)
-    "setno": 1,  # Set byte if not overflow (OF=0)
-    "bt": 2,  # Bit Test
-    "bts": 2,  # Bit Test and Set
-    "btr": 2,  # Bit Test and Reset
-    "btc": 2,  # Bit Test and Complement
-    "bsf": 3,  # Bit Scan Forward
-    "bsr": 3,  # Bit Scan Reverse
-    "popcnt": 3,  # Population Count (count set bits) - modern CPUs
-    "lzcnt": 3,  # Leading Zero Count
-    "tzcnt": 3,  # Trailing Zero Count
+    # --- Data Movement Instructions (Assume cache miss: 3 cycles for memory ops) ---
+    "movb": 3,  # Move byte (reg/imm/mem*) - cache miss
+    "movw": 3,  # Move word (reg/imm/mem*) - cache miss
+    "movl": 3,  # Move doubleword (reg/imm/mem*) - cache miss
+    "movq": 3,  # Move quadword (reg/imm/mem*) - cache miss
+    "movabsq": 1,  # Move 64-bit immediate to register (no memory access)
+    "movzbw": 3,  # Move byte to word with zero-extend (cache miss)
+    "movzbl": 3,  # Move byte to doubleword with zero-extend (cache miss)
+    "movzbq": 3,  # Move byte to quadword with zero-extend (cache miss)
+    "movzwl": 3,  # Move word to doubleword with zero-extend (cache miss)
+    "movzwq": 3,  # Move word to quadword with zero-extend (cache miss)
+    "movzlq": 3,  # Move doubleword to quadword with zero-extend (cache miss)
+    "movsbw": 3,  # Move byte to word with sign-extend (cache miss)
+    "movsbl": 3,  # Move byte to doubleword with sign-extend (cache miss)
+    "movsbq": 3,  # Move byte to quadword with sign-extend (cache miss)
+    "movswl": 3,  # Move word to doubleword with sign-extend (cache miss)
+    "movswq": 3,  # Move word to quadword with sign-extend (cache miss)
+    "movslq": 3,  # Move doubleword to quadword with sign-extend (cache miss)
+    "leaq": 1,  # Load Effective Address (address calculation, no memory access)
+    "cmove": 3,  # Conditional move if equal (cache miss if memory)
+    "cmovne": 3,  # Conditional move if not equal (cache miss if memory)
+    "cmovl": 3,  # Conditional move if less (cache miss if memory)
+    "cmovg": 3,  # Conditional move if greater (cache miss if memory)
+    "cmovle": 3,  # Conditional move if less or equal (cache miss if memory)
+    "cmovge": 3,  # Conditional move if greater or equal (cache miss if memory)
+    "cmovb": 3,  # Conditional move if below (unsigned, cache miss if memory)
+    "cmova": 3,  # Conditional move if above (unsigned, cache miss if memory)
+    "cmovbe": 3,  # Conditional move if below or equal (unsigned, cache miss if memory)
+    "cmovae": 3,  # Conditional move if above or equal (unsigned, cache miss if memory)
+    "cmovs": 3,  # Conditional move if sign (cache miss if memory)
+    "cmovns": 3,  # Conditional move if not sign (cache miss if memory)
+    "cmovp": 3,  # Conditional move if parity (cache miss if memory)
+    "cmovnp": 3,  # Conditional move if not parity (cache miss if memory)
+    "cmovo": 3,  # Conditional move if overflow (cache miss if memory)
+    "cmovno": 3,  # Conditional move if not overflow (cache miss if memory)
+    "xchgb": 3,  # Exchange byte (reg-mem, cache miss)
+    "xchgw": 3,  # Exchange word (reg-mem, cache miss)
+    "xchgl": 3,  # Exchange doubleword (reg-mem, cache miss)
+    "xchgq": 3,  # Exchange quadword (reg-mem, cache miss)
+    # --- Stack Instructions (assume stack memory cache miss) ---
+    "pushq": 3,  # Push quadword onto stack (cache miss)
+    "popq": 3,  # Pop quadword from stack (cache miss)
+    "pushfq": 3,  # Push RFLAGS register (cache miss)
+    "popfq": 3,  # Pop RFLAGS register (cache miss)
+    "enter": 3,  # Create stack frame (cache miss)
+    "leave": 3,  # Destroy stack frame (cache miss)
+    # --- Integer Arithmetic Instructions (register only, so no cache miss) ---
+    "addb": 1,
+    "addw": 1,
+    "addl": 1,
+    "addq": 1,
+    "subb": 1,
+    "subw": 1,
+    "subl": 1,
+    "subq": 1,
+    "incb": 1,
+    "incw": 1,
+    "incl": 1,
+    "incq": 1,
+    "decb": 1,
+    "decw": 1,
+    "decl": 1,
+    "decq": 1,
+    "negb": 1,
+    "negw": 1,
+    "negl": 1,
+    "negq": 1,
+    "imulb": 3,
+    "imulw": 3,
+    "imull": 3,
+    "imulq": 3,
+    "mulb": 3,
+    "mulw": 3,
+    "mull": 3,
+    "mulq": 3,
+    "idivb": 20,
+    "idivw": 25,
+    "idivl": 30,
+    "idivq": 40,
+    "divb": 20,
+    "divw": 25,
+    "divl": 30,
+    "divq": 40,
+    "cbw": 1,
+    "cwde": 1,
+    "cdqe": 1,
+    "cwd": 1,
+    "cdq": 1,
+    "cqo": 1,
+    # --- Logic and Bitwise Instructions (register only, so no cache miss) ---
+    "andb": 1,
+    "andw": 1,
+    "andl": 1,
+    "andq": 1,
+    "orb": 1,
+    "orw": 1,
+    "orl": 1,
+    "orq": 1,
+    "xorb": 1,
+    "xorw": 1,
+    "xorl": 1,
+    "xorq": 1,
+    "notb": 1,
+    "notw": 1,
+    "notl": 1,
+    "notq": 1,
+    "shlb": 1,
+    "shlw": 1,
+    "shll": 1,
+    "shlq": 1,
+    "shrb": 1,
+    "shrw": 1,
+    "shrl": 1,
+    "shrq": 1,
+    "sarb": 1,
+    "sarw": 1,
+    "sarl": 1,
+    "sarq": 1,
+    "rolb": 1,
+    "rolw": 1,
+    "roll": 1,
+    "rolq": 1,
+    "rorb": 1,
+    "rorw": 1,
+    "rorl": 1,
+    "rorq": 1,
+    "rclb": 2,
+    "rclw": 2,
+    "rcll": 2,
+    "rclq": 2,
+    "rcrb": 2,
+    "rcrw": 2,
+    "rcrl": 2,
+    "rcrq": 2,
+    "testb": 1,
+    "testw": 1,
+    "testl": 1,
+    "testq": 1,
+    "cmpb": 1,
+    "cmpw": 1,
+    "cmpl": 1,
+    "cmpq": 1,
+    "sete": 1,
+    "setne": 1,
+    "setl": 1,
+    "setg": 1,
+    "setle": 1,
+    "setge": 1,
+    "setb": 1,
+    "seta": 1,
+    "setbe": 1,
+    "setae": 1,
+    "sets": 1,
+    "setns": 1,
+    "setp": 1,
+    "setnp": 1,
+    "seto": 1,
+    "setno": 1,
+    "bt": 2,
+    "bts": 2,
+    "btr": 2,
+    "btc": 2,
+    "bsf": 3,
+    "bsr": 3,
+    "popcnt": 3,
+    "lzcnt": 3,
+    "tzcnt": 3,
     # --- Control Flow Instructions ---
-    "jmp": 1,  # Unconditional Jump (cost assumes predicted; mispredict ~15-25+)
-    "je": 1,  # Jump if equal (example Jcc) - cost assumes predicted; mispredict ~15-25+
-    "jne": 1,  # Jump if not equal
-    "jl": 1,  # Jump if less
-    "jg": 1,  # Jump if greater
-    "jle": 1,  # Jump if less or equal
-    "jge": 1,  # Jump if greater or equal
-    "jb": 1,  # Jump if below
-    "ja": 1,  # Jump if above
-    "jbe": 1,  # Jump if below or equal
-    "jae": 1,  # Jump if above or equal
-    "js": 1,  # Jump if sign
-    "jns": 1,  # Jump if not sign
-    "jp": 1,  # Jump if parity
-    "jnp": 1,  # Jump if not parity
-    "jo": 1,  # Jump if overflow
-    "jno": 1,  # Jump if not overflow
-    "callq": 5,  # Procedure Call (base cost + branch prediction effects)
-    "retq": 3,  # Return from Procedure (base cost + branch prediction effects)
-    "loop": 6,  # Decrement CX and loop if not zero
-    "loope": 6,  # Decrement CX and loop if equal
-    "loopne": 6,  # Decrement CX and loop if not equal
+    "jmp": 1,
+    "je": 1,
+    "jne": 1,
+    "jl": 1,
+    "jg": 1,
+    "jle": 1,
+    "jge": 1,
+    "jb": 1,
+    "ja": 1,
+    "jbe": 1,
+    "jae": 1,
+    "js": 1,
+    "jns": 1,
+    "jp": 1,
+    "jnp": 1,
+    "jo": 1,
+    "jno": 1,
+    "callq": 5,
+    "retq": 3,
+    "loop": 6,
+    "loope": 6,
+    "loopne": 6,
     # --- Floating Point & SIMD (SSE/AVX - Selected Scalar & Packed) ---
-    "movss": 1,  # Move Scalar Single FP (reg/imm/mem*)
-    "movsd": 1,  # Move Scalar Double FP (reg/imm/mem*)
-    "movaps": 1,  # Move Aligned Packed Single FP (reg/mem*)
-    "movapd": 1,  # Move Aligned Packed Double FP (reg/mem*)
-    "movups": 2,  # Move Unaligned Packed Single FP (reg/mem*) - Slightly higher penalty if unaligned
-    "movupd": 2,  # Move Unaligned Packed Double FP (reg/mem*) - Slightly higher penalty if unaligned
-    "movdqa": 1,  # Move Aligned Double Quadword (128-bit integer)
-    "movdqu": 2,  # Move Unaligned Double Quadword (128-bit integer)
-    "addss": 4,  # Add Scalar Single FP
-    "addsd": 4,  # Add Scalar Double FP
-    "addps": 4,  # Add Packed Single FP
-    "addpd": 4,  # Add Packed Double FP
-    "subss": 4,  # Subtract Scalar Single FP
-    "subsd": 4,  # Subtract Scalar Double FP
-    "subps": 4,  # Subtract Packed Single FP
-    "subpd": 4,  # Subtract Packed Double FP
-    "mulss": 4,  # Multiply Scalar Single FP
-    "mulsd": 4,  # Multiply Scalar Double FP
-    "mulps": 4,  # Multiply Packed Single FP
-    "mulpd": 4,  # Multiply Packed Double FP
-    "divss": 15,  # Divide Scalar Single FP - **Slow/Variable**
-    "divsd": 20,  # Divide Scalar Double FP - **Slow/Variable**
-    "divps": 15,  # Divide Packed Single FP - **Slow/Variable**
-    "divpd": 20,  # Divide Packed Double FP - **Slow/Variable**
-    "sqrtss": 15,  # Square Root Scalar Single FP - **Slow/Variable**
-    "sqrtsd": 20,  # Square Root Scalar Double FP - **Slow/Variable**
-    "sqrtps": 15,  # Square Root Packed Single FP - **Slow/Variable**
-    "sqrtpd": 20,  # Square Root Packed Double FP - **Slow/Variable**
-    "ucomiss": 3,  # Unordered Compare Scalar Single FP (sets EFLAGS)
-    "ucomisd": 3,  # Unordered Compare Scalar Double FP (sets EFLAGS)
-    "cmpps": 3,  # Compare Packed Single FP (result in register/mask)
-    "cmppd": 3,  # Compare Packed Double FP (result in register/mask)
-    "cvtsi2ss": 5,  # Convert Int to Scalar Single FP
-    "cvtsi2sd": 5,  # Convert Int to Scalar Double FP
-    "cvttss2si": 5,  # Convert Truncated Scalar Single FP to Int
-    "cvttsd2si": 5,  # Convert Truncated Scalar Double FP to Int
-    "shufps": 2,  # Shuffle Packed Single FP
-    "shufpd": 2,  # Shuffle Packed Double FP
-    "paddb": 1,  # Packed Add Byte (MMX/SSE/AVX)
-    "paddw": 1,  # Packed Add Word
-    "paddd": 1,  # Packed Add Doubleword
-    "paddq": 1,  # Packed Add Quadword
-    "psubb": 1,  # Packed Subtract Byte
-    "psubw": 1,  # Packed Subtract Word
-    "psubd": 1,  # Packed Subtract Doubleword
-    "psubq": 1,  # Packed Subtract Quadword
-    "pand": 1,  # Packed Bitwise AND
-    "por": 1,  # Packed Bitwise OR
-    "pxor": 1,  # Packed Bitwise XOR
-    # --- String Instructions ---
-    # Base cost per element; REP prefix makes total cost highly variable
-    "movsb": 8,  # Move byte from DS:[RSI] to ES:[RDI]
-    "movsw": 8,  # Move word
-    "movsl": 8,  # Move doubleword
-    "movsq": 8,  # Move quadword
-    "cmpsb": 8,  # Compare byte DS:[RSI] with ES:[RDI]
-    "cmpsw": 8,  # Compare word
-    "cmpsl": 8,  # Compare doubleword
-    "cmpsq": 8,  # Compare quadword
-    "stosb": 8,  # Store AL to ES:[RDI]
-    "stosw": 8,  # Store AX
-    "stosl": 8,  # Store EAX
-    "stosq": 8,  # Store RAX
-    "lodsb": 8,  # Load byte from DS:[RSI] to AL
-    "lodsw": 8,  # Load word to AX
-    "lodsl": 8,  # Load doubleword to EAX
-    "lodsq": 8,  # Load quadword to RAX
-    "scasb": 8,  # Scan AL against ES:[RDI]
-    "scasw": 8,  # Scan AX
-    "scasl": 8,  # Scan EAX
-    "scasq": 8,  # Scan RAX
+    "movss": 3,  # Move Scalar Single FP (cache miss)
+    "movsd": 3,  # Move Scalar Double FP (cache miss)
+    "movaps": 3,  # Move Aligned Packed Single FP (cache miss)
+    "movapd": 3,  # Move Aligned Packed Double FP (cache miss)
+    "movups": 3,  # Move Unaligned Packed Single FP (cache miss)
+    "movupd": 3,  # Move Unaligned Packed Double FP (cache miss)
+    "movdqa": 3,  # Move Aligned Double Quadword (cache miss)
+    "movdqu": 3,  # Move Unaligned Double Quadword (cache miss)
+    "addss": 4,
+    "addsd": 4,
+    "addps": 4,
+    "addpd": 4,
+    "subss": 4,
+    "subsd": 4,
+    "subps": 4,
+    "subpd": 4,
+    "mulss": 4,
+    "mulsd": 4,
+    "mulps": 4,
+    "mulpd": 4,
+    "divss": 15,
+    "divsd": 20,
+    "divps": 15,
+    "divpd": 20,
+    "sqrtss": 15,
+    "sqrtsd": 20,
+    "sqrtps": 15,
+    "sqrtpd": 20,
+    "ucomiss": 3,
+    "ucomisd": 3,
+    "cmpps": 3,
+    "cmppd": 3,
+    "cvtsi2ss": 5,
+    "cvtsi2sd": 5,
+    "cvttss2si": 5,
+    "cvttsd2si": 5,
+    "shufps": 2,
+    "shufpd": 2,
+    "paddb": 1,
+    "paddw": 1,
+    "paddd": 1,
+    "paddq": 1,
+    "psubb": 1,
+    "psubw": 1,
+    "psubd": 1,
+    "psubq": 1,
+    "pand": 1,
+    "por": 1,
+    "pxor": 1,
+    # --- String Instructions (cache miss per element) ---
+    "movsb": 3,
+    "movsw": 3,
+    "movsl": 3,
+    "movsq": 3,
+    "cmpsb": 3,
+    "cmpsw": 3,
+    "cmpsl": 3,
+    "cmpsq": 3,
+    "stosb": 3,
+    "stosw": 3,
+    "stosl": 3,
+    "stosq": 3,
+    "lodsb": 3,
+    "lodsw": 3,
+    "lodsl": 3,
+    "lodsq": 3,
+    "scasb": 3,
+    "scasw": 3,
+    "scasl": 3,
+    "scasq": 3,
     # --- System and Miscellaneous Instructions ---
-    "syscall": 1000,  # Fast System Call - **Very Slow (Kernel Transition)**
-    "sysenter": 1000,  # Legacy System Call - **Very Slow**
-    "sysexit": 1000,  # Legacy System Return - **Very Slow**
-    "int": 1000,  # Software Interrupt - **Very Slow (Handler Dependent)**
-    "cpuid": 100,  # CPU Identification - Slow, Serializing
-    "rdtsc": 30,  # Read Time-Stamp Counter - Serializing effects
-    "rdtscp": 30,  # Read Time-Stamp Counter and Processor ID - Serializing effects
-    "nop": 1,  # No Operation (often 0 cycles effective)
-    "pause": 40,  # Spin Loop Hint (variable, yields to hyperthread)
-    "hlt": 1000,  # Halt - Stops CPU until interrupt (cost is context-dependent)
-    "lock": 15,  # Atomic Prefix (Adds significant cost to the following instruction) - **Base Cost Added**
-    "cmpxchgb": 15,  # Compare and Exchange byte (use with LOCK)
-    "cmpxchgw": 15,  # Compare and Exchange word
-    "cmpxchgl": 15,  # Compare and Exchange doubleword
-    "cmpxchgq": 15,  # Compare and Exchange quadword
-    "xaddb": 15,  # Exchange and Add byte (use with LOCK)
-    "xaddw": 15,  # Exchange and Add word
-    "xaddl": 15,  # Exchange and Add doubleword
-    "xaddq": 15,  # Exchange and Add quadword
-    "lfence": 20,  # Load Fence
-    "sfence": 20,  # Store Fence
-    "mfence": 30,  # Memory Fence (Load + Store)
+    "syscall": 300,
+    "sysenter": 300,
+    "sysexit": 300,
+    "int": 300,
+    "cpuid": 30,
+    "rdtsc": 30,
+    "rdtscp": 30,
+    "nop": 1,
+    "pause": 40,
+    "hlt": 300,
+    "lock": 15,
+    "cmpxchgb": 3,
+    "cmpxchgw": 3,
+    "cmpxchgl": 3,
+    "cmpxchgq": 3,
+    "xaddb": 3,
+    "xaddw": 3,
+    "xaddl": 3,
+    "xaddq": 3,
+    "lfence": 20,
+    "sfence": 20,
+    "mfence": 30,
 }
 
 def demangle_name(mangled_name):
