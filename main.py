@@ -11,56 +11,51 @@ import traceback
 
 from collections import defaultdict
 
-# Estimated costs based on typical x86-64 latencies (highly approximate)
-
 assembly_costs = {
-    # --- Data Movement Instructions (Assume cache miss: 3 cycles for memory ops) ---
-    "movb": 3,  # Move byte (reg/imm/mem*) - cache miss
-    "movw": 3,  # Move word (reg/imm/mem*) - cache miss
-    "movl": 3,  # Move doubleword (reg/imm/mem*) - cache miss
-    "movq": 3,  # Move quadword (reg/imm/mem*) - cache miss
-    "movabsq": 1,  # Move 64-bit immediate to register (no memory access)
-    "movzbw": 3,  # Move byte to word with zero-extend (cache miss)
-    "movzbl": 3,  # Move byte to doubleword with zero-extend (cache miss)
-    "movzbq": 3,  # Move byte to quadword with zero-extend (cache miss)
-    "movzwl": 3,  # Move word to doubleword with zero-extend (cache miss)
-    "movzwq": 3,  # Move word to quadword with zero-extend (cache miss)
-    "movzlq": 3,  # Move doubleword to quadword with zero-extend (cache miss)
-    "movsbw": 3,  # Move byte to word with sign-extend (cache miss)
-    "movsbl": 3,  # Move byte to doubleword with sign-extend (cache miss)
-    "movsbq": 3,  # Move byte to quadword with sign-extend (cache miss)
-    "movswl": 3,  # Move word to doubleword with sign-extend (cache miss)
-    "movswq": 3,  # Move word to quadword with sign-extend (cache miss)
-    "movslq": 3,  # Move doubleword to quadword with sign-extend (cache miss)
-    "leaq": 1,  # Load Effective Address (address calculation, no memory access)
-    "cmove": 3,  # Conditional move if equal (cache miss if memory)
-    "cmovne": 3,  # Conditional move if not equal (cache miss if memory)
-    "cmovl": 3,  # Conditional move if less (cache miss if memory)
-    "cmovg": 3,  # Conditional move if greater (cache miss if memory)
-    "cmovle": 3,  # Conditional move if less or equal (cache miss if memory)
-    "cmovge": 3,  # Conditional move if greater or equal (cache miss if memory)
-    "cmovb": 3,  # Conditional move if below (unsigned, cache miss if memory)
-    "cmova": 3,  # Conditional move if above (unsigned, cache miss if memory)
-    "cmovbe": 3,  # Conditional move if below or equal (unsigned, cache miss if memory)
-    "cmovae": 3,  # Conditional move if above or equal (unsigned, cache miss if memory)
-    "cmovs": 3,  # Conditional move if sign (cache miss if memory)
-    "cmovns": 3,  # Conditional move if not sign (cache miss if memory)
-    "cmovp": 3,  # Conditional move if parity (cache miss if memory)
-    "cmovnp": 3,  # Conditional move if not parity (cache miss if memory)
-    "cmovo": 3,  # Conditional move if overflow (cache miss if memory)
-    "cmovno": 3,  # Conditional move if not overflow (cache miss if memory)
-    "xchgb": 3,  # Exchange byte (reg-mem, cache miss)
-    "xchgw": 3,  # Exchange word (reg-mem, cache miss)
-    "xchgl": 3,  # Exchange doubleword (reg-mem, cache miss)
-    "xchgq": 3,  # Exchange quadword (reg-mem, cache miss)
-    # --- Stack Instructions (assume stack memory cache miss) ---
-    "pushq": 3,  # Push quadword onto stack (cache miss)
-    "popq": 3,  # Pop quadword from stack (cache miss)
-    "pushfq": 3,  # Push RFLAGS register (cache miss)
-    "popfq": 3,  # Pop RFLAGS register (cache miss)
-    "enter": 3,  # Create stack frame (cache miss)
-    "leave": 3,  # Destroy stack frame (cache miss)
-    # --- Integer Arithmetic Instructions (register only, so no cache miss) ---
+    "movb": 3,
+    "movw": 3,
+    "movl": 3,
+    "movq": 3,
+    "movabsq": 1,
+    "movzbw": 3,
+    "movzbl": 3,
+    "movzbq": 3,
+    "movzwl": 3,
+    "movzwq": 3,
+    "movzlq": 3,
+    "movsbw": 3,
+    "movsbl": 3,
+    "movsbq": 3,
+    "movswl": 3,
+    "movswq": 3,
+    "movslq": 3,
+    "leaq": 1,
+    "cmove": 3,
+    "cmovne": 3,
+    "cmovl": 3,
+    "cmovg": 3,
+    "cmovle": 3,
+    "cmovge": 3,
+    "cmovb": 3,
+    "cmova": 3,
+    "cmovbe": 3,
+    "cmovae": 3,
+    "cmovs": 3,
+    "cmovns": 3,
+    "cmovp": 3,
+    "cmovnp": 3,
+    "cmovo": 3,
+    "cmovno": 3,
+    "xchgb": 3,
+    "xchgw": 3,
+    "xchgl": 3,
+    "xchgq": 3,
+    "pushq": 3,
+    "popq": 3,
+    "pushfq": 3,
+    "popfq": 3,
+    "enter": 3,
+    "leave": 3,
     "addb": 1,
     "addw": 1,
     "addl": 1,
@@ -103,7 +98,6 @@ assembly_costs = {
     "cwd": 1,
     "cdq": 1,
     "cqo": 1,
-    # --- Logic and Bitwise Instructions (register only, so no cache miss) ---
     "andb": 1,
     "andw": 1,
     "andl": 1,
@@ -181,7 +175,6 @@ assembly_costs = {
     "popcnt": 3,
     "lzcnt": 3,
     "tzcnt": 3,
-    # --- Control Flow Instructions ---
     "jmp": 1,
     "je": 1,
     "jne": 1,
@@ -204,15 +197,14 @@ assembly_costs = {
     "loop": 6,
     "loope": 6,
     "loopne": 6,
-    # --- Floating Point & SIMD (SSE/AVX - Selected Scalar & Packed) ---
-    "movss": 3,  # Move Scalar Single FP (cache miss)
-    "movsd": 3,  # Move Scalar Double FP (cache miss)
-    "movaps": 3,  # Move Aligned Packed Single FP (cache miss)
-    "movapd": 3,  # Move Aligned Packed Double FP (cache miss)
-    "movups": 3,  # Move Unaligned Packed Single FP (cache miss)
-    "movupd": 3,  # Move Unaligned Packed Double FP (cache miss)
-    "movdqa": 3,  # Move Aligned Double Quadword (cache miss)
-    "movdqu": 3,  # Move Unaligned Double Quadword (cache miss)
+    "movss": 3,
+    "movsd": 3,
+    "movaps": 3,
+    "movapd": 3,
+    "movups": 3,
+    "movupd": 3,
+    "movdqa": 3,
+    "movdqu": 3,
     "addss": 4,
     "addsd": 4,
     "addps": 4,
@@ -254,7 +246,6 @@ assembly_costs = {
     "pand": 1,
     "por": 1,
     "pxor": 1,
-    # --- String Instructions (cache miss per element) ---
     "movsb": 3,
     "movsw": 3,
     "movsl": 3,
@@ -275,7 +266,6 @@ assembly_costs = {
     "scasw": 3,
     "scasl": 3,
     "scasq": 3,
-    # --- System and Miscellaneous Instructions ---
     "syscall": 300,
     "sysenter": 300,
     "sysexit": 300,
@@ -300,34 +290,30 @@ assembly_costs = {
     "mfence": 30,
 }
 
+
 def demangle_name(mangled_name):
-    """
-    Demangle a C++/Rust mangled symbol name, and clean up Rust hash suffixes and closure/generic markers.
-    """
     if not mangled_name:
         return ""
     name_to_demangle = mangled_name.lstrip('@')
     try:
         demangled = cxxfilt.demangle(name_to_demangle)
-        # Remove Rust hash suffixes (e.g., ::h1234567890abcdefE)
-        demangled = re.sub(r'::h[0-9a-f]{16}E$', '', demangled)
-        # Remove Rust closure markers
+        demangled = re.sub(r"::h[0-9a-f]{16}E$", "", demangled)
         demangled = re.sub(r"\{\{closure\}\}", "", demangled)
-        # Remove Rust generator markers
         demangled = re.sub(r"\{\{generator\}\}", "", demangled)
-        # Remove trailing whitespace
         demangled = demangled.strip()
         return demangled
     except Exception:
         return name_to_demangle
+
 
 def parse_llvm_ir(llvm_code):
     functions = {}
     calls = []
     current_function = None
     func_def_regex = re.compile(r"^\s*define\s+.*\s+(@[^(\s]+)\s*\(")
-    call_regex = re.compile(r"^\s*(?:tail\s+|musttail\s+|notail\s+)?(?:call|invoke)\s+.*\s+(@[^(\s]+)\s*\(")
-
+    call_regex = re.compile(
+        r"^\s*(?:tail\s+|musttail\s+|notail\s+)?(?:call|invoke)\s+.*\s+(@[^(\s]+)\s*\("
+    )
     lines = llvm_code.splitlines()
     for line in lines:
         line = line.strip()
@@ -336,7 +322,6 @@ def parse_llvm_ir(llvm_code):
             current_function = func_match.group(1)
             functions[current_function] = line
             continue
-
         if current_function:
             call_match = call_regex.search(line)
             if call_match:
@@ -344,12 +329,10 @@ def parse_llvm_ir(llvm_code):
                 calls.append((current_function, callee_name))
             if re.match(r"^\s*\}\s*(;.*)?$", line):
                 current_function = None
-
     return functions, calls
 
 
 def _is_rust_stdlib_or_core(label):
-    # Returns True if the demangled label is from Rust std/core/alloc or LLVM intrinsics
     return (
         label.startswith("std::")
         or label.startswith("core::")
@@ -359,12 +342,10 @@ def _is_rust_stdlib_or_core(label):
 
 
 def _is_rust_closure_or_generator(label):
-    # Returns True if the demangled label contains closure or generator markers
     return "{{closure}}" in label or "{{generator}}" in label
 
 
 def _is_rust_generic(label):
-    # Returns True if the demangled label contains generic angle brackets (not for LLVM intrinsics)
     return ("<" in label and ">" in label) and not label.startswith("llvm.")
 
 
@@ -386,7 +367,6 @@ def build_call_graph_from_ll(llvm_code, no_filter=False):
     if no_filter:
         print("\n--no-filter specified: No filtering of nodes will be performed.")
         return full_graph, full_labels
-
     filtered_graph = nx.DiGraph()
     filtered_display_labels = {}
     print(
@@ -396,26 +376,19 @@ def build_call_graph_from_ll(llvm_code, no_filter=False):
     filtered_out_nodes = 0
     for node, raw_label in full_labels.items():
         keep_node = True
-        # Exclude Rust stdlib/core/alloc and LLVM intrinsics
         if _is_rust_stdlib_or_core(raw_label):
             keep_node = False
-        # Exclude closures and generators
         elif _is_rust_closure_or_generator(raw_label):
             keep_node = False
-        # Exclude generics (angle brackets) except for LLVM intrinsics
         elif _is_rust_generic(raw_label):
             keep_node = False
-        # Exclude unmangled names that look like _ZN... (Rust/C++ mangling)
         elif raw_label.startswith("_ZN"):
             keep_node = False
         if keep_node:
             filtered_graph.add_node(node)
             simplified_label = raw_label
-            # Remove Rust trait-as-impl prefix (e.g., <T as Trait>::)
-            simplified_label = re.sub(r'<.* as .*>::', '', simplified_label)
-            # Remove generic parameters for display clarity (keep only the function name)
+            simplified_label = re.sub(r"<.* as .*>::", "", simplified_label)
             simplified_label = re.sub(r"<.*?>", "", simplified_label)
-            # Remove extra whitespace
             simplified_label = simplified_label.strip()
             filtered_display_labels[node] = simplified_label
             kept_nodes += 1
@@ -447,7 +420,6 @@ def detect_cycles(graph):
     if not graph.nodes:
         return cycles_list, cyclic_nodes, cyclic_edges
     try:
-
         def canonical_cycle(cycle):
             if not cycle: return tuple()
             n = len(cycle)
@@ -457,7 +429,6 @@ def detect_cycles(graph):
                 if rotated < min_tuple:
                     min_tuple = rotated
             return min_tuple
-
         seen_cycles = set()
         for cycle in nx.simple_cycles(graph):
             can = canonical_cycle(cycle)
@@ -478,7 +449,6 @@ def detect_cycles(graph):
         return [], set(), set()
     return cycles_list, cyclic_nodes, cyclic_edges
 
-
 def calculate_edge_cycle_counts(graph, cycles_list):
     edge_counts = defaultdict(int)
     for cycle in cycles_list:
@@ -490,7 +460,6 @@ def calculate_edge_cycle_counts(graph, cycles_list):
                 edge_counts[(u, v)] += 1
     return dict(edge_counts)
 
-
 def calculate_node_cycle_counts(graph, cycles_list):
     node_counts = defaultdict(int)
     for cycle in cycles_list:
@@ -500,66 +469,39 @@ def calculate_node_cycle_counts(graph, cycles_list):
 
 
 def estimate_wcet_cycles(function_name, assembly_code):
-    """
-    Estimates WCET cycles for a function based on its assembly code.
-
-    Args:
-        function_name: The mangled name of the function (e.g., '@_ZN...').
-        assembly_code: A string containing the entire assembly code.
-
-    Returns:
-        An integer representing the estimated cycle count, or None if error.
-    """
-    # Use the global assembly_costs dictionary
     global assembly_costs
-
-    # Normalize function name (remove leading '@', common in LLVM IR but maybe not assembly labels)
-    # Assembly labels might have a leading underscore or other prefixes depending on the ABI/platform.
     base_func_name = function_name.lstrip('@')
     possible_labels = [
-        f"{base_func_name}:",         # e.g., main:
-        f"_{base_func_name}:",        # e.g., _main:
-        f".{base_func_name}:"         # e.g., .main: (less common for functions)
+        f"{base_func_name}:",
+        f"_{base_func_name}:",
+        f".{base_func_name}:",
     ]
-    # Add common linkage names if needed, e.g., from .globl directive
-    possible_globls = [
-        f".globl\t{base_func_name}",
-        f".globl\t_{base_func_name}"
-    ]
-
-
+    possible_globls = [f".globl\t{base_func_name}", f".globl\t_{base_func_name}"]
     estimated_cycles = 0
     instruction_count = 0
     in_function = False
     found_function = False
-
     lines = assembly_code.splitlines()
-
     try:
         for i, line in enumerate(lines):
             stripped_line = line.strip()
-
             if not in_function:
-                # Check if the line matches any possible start label
                 if any(stripped_line.startswith(label) for label in possible_labels):
-                    # Check if this label was declared global nearby
                     is_global = False
-                    for j in range(max(0, i - 5), i): # Check previous lines for .globl
+                    for j in range(max(0, i - 5), i):
                         if any(glob_pattern in lines[j] for glob_pattern in possible_globls):
                             is_global = True
                             break
-                    # Crude check: if it looks like a function label and is maybe global, start parsing
-                    if is_global or ':' in stripped_line: # Basic check
-                         in_function = True
-                         found_function = True
-                         print(f"INFO: Starting WCET count for {function_name} at line {i+1}: {stripped_line}")
-
+                    if is_global or ":" in stripped_line:
+                        in_function = True
+                        found_function = True
+                        print(
+                            f"INFO: Starting WCET count for {function_name} at line {i+1}: {stripped_line}"
+                        )
             if in_function:
-                # Remove comments first (handle '#' and potentially ';')
-                line_no_comment = stripped_line.split('#', 1)[0].split(';', 1)[0].strip()
-
-                # Stop if we hit another likely function label or end directive
-                # Check the line *without* comments
+                line_no_comment = (
+                    stripped_line.split("#", 1)[0].split(";", 1)[0].strip()
+                )
                 if line_no_comment.endswith(':') and not any(line_no_comment == label for label in possible_labels) and instruction_count > 0:
                     print(f"INFO: Ending WCET count for {function_name} before line {i+1}: {stripped_line}")
                     in_function = False
@@ -568,19 +510,13 @@ def estimate_wcet_cycles(function_name, assembly_code):
                     print(f"INFO: Ending WCET count for {function_name} at CFI directive line {i+1}")
                     in_function = False
                     break
-
-                # Ignore directives, empty lines, or labels based on the comment-free line
                 if line_no_comment.startswith('.') or not line_no_comment or \
                     line_no_comment.endswith(':'):
                     continue
-
-
-                # Extract the instruction mnemonic from the comment-free line
-                parts = line_no_comment.split(None, 1) # Split on first whitespace
+                parts = line_no_comment.split(None, 1)
                 if parts:
-                    mnemonic = parts[0].lower() # Use lower case for matching keys
+                    mnemonic = parts[0].lower()
                     cost = assembly_costs.get(mnemonic)
-
                     if cost is not None:
                         estimated_cycles += cost
                         instruction_count += 1
@@ -596,47 +532,33 @@ def estimate_wcet_cycles(function_name, assembly_code):
                     print(f"INFO: Ending WCET count for {function_name} at CFI directive line {i+1}")
                     in_function = False
                     break
-
-                # Ignore comments, directives, empty lines, labels
                 if stripped_line.startswith('#') or stripped_line.startswith(';') or \
                    stripped_line.startswith('.') or not stripped_line or \
                    stripped_line.endswith(':'):
                     continue
-
-                # Extract the instruction mnemonic
-                parts = stripped_line.split(None, 1) # Split on first whitespace
+                parts = stripped_line.split(None, 1)
                 if parts:
-                    mnemonic = parts[0].lower() # Use lower case for matching keys
+                    mnemonic = parts[0].lower()
                     cost = assembly_costs.get(mnemonic)
-
                     if cost is not None:
                         estimated_cycles += cost
                         instruction_count += 1
                     else:
-                        # Optional: Add a default cost or warning for unknown instructions
                         print(f"Warning: Unknown assembly instruction '{mnemonic}' in function {function_name}. Assigning default cost 1.", file=sys.stderr)
                         estimated_cycles += 1
                         instruction_count += 1
-
-
         if not found_function:
-            # Function might be external or non-existent in this assembly
-            # Check if it's declared (common for library calls)
             if any(f".type\t{base_func_name}, @function" in line for line in lines) or \
                any(f".globl\t{base_func_name}" in line for line in lines) or \
                any(f".symver {base_func_name}," in line for line in lines):
-                 print(f"INFO: Function {function_name} seems declared but not defined. Assigning minimal cost 1.")
-                 return 1
+                print(f"INFO: Function {function_name} seems declared but not defined. Assigning minimal cost 1.")
+                return 1
             else:
                 print(f"Warning: Could not find assembly definition label for {function_name}", file=sys.stderr)
                 return None
-
-        # Basic minimum cost
         min_cost = 1 + instruction_count
         estimated_cycles = max(estimated_cycles, min_cost)
-
         return estimated_cycles
-
     except Exception as e:
         print(f"Error estimating assembly cycles for {function_name}: {e}", file=sys.stderr)
         demangled_name = demangle_name(function_name)
@@ -657,7 +579,6 @@ def draw_and_export_graph(
     if not graph.nodes:
         print("Filtered graph is empty, cannot draw.", file=sys.stderr)
         return
-
     edge_cycle_counts = calculate_edge_cycle_counts(graph, cycles_list)
     wcet_estimates = {}
     print(
@@ -670,7 +591,6 @@ def draw_and_export_graph(
             print(f"  - {display_label}: ~{wcet_cycles} cycles (from assembly)")
         else:
             print(f"  - {display_label}: Assembly WCET estimation failed")
-
     num_nodes = len(graph.nodes)
     fig_width = max(18, num_nodes * 1.3)
     fig_height = max(15, num_nodes * 1.1)
@@ -777,7 +697,6 @@ def draw_and_export_graph(
                 zorder=10,
             )
         file_base_name = svg_path.rsplit(".", 1)[0]
-        # Consider updating the title if the primary source is now assembly
         plt.title(f"Filtered LLVM IR Call Graph (Assembly Cycles Estimated)\nSource LLVM: {file_base_name}.ll", fontsize=16)
         plt.axis("off")
         plt.tight_layout(pad=1.0)
@@ -789,7 +708,6 @@ def draw_and_export_graph(
         traceback.print_exc(file=sys.stderr)
     finally:
         plt.close()
-
 
 def main():
     parser_arg = argparse.ArgumentParser(
@@ -810,8 +728,6 @@ def main():
         help="Path to output SVG file (default: <llvm_file_base>.filtered.svg)",
     )
     args = parser_arg.parse_args()
-
-    # Read Assembly file
     try:
         with open(args.asm_file, "r", encoding="utf-8") as f:
             assembly_code = f.read()
@@ -821,8 +737,6 @@ def main():
     except Exception as e:
         print(f"Error reading Assembly file '{args.asm_file}': {e}", file=sys.stderr)
         sys.exit(1)
-
-    # Read LLVM IR file
     try:
         with open(args.llvm_file, "r", encoding="utf-8") as f:
             llvm_code = f.read()
@@ -832,10 +746,8 @@ def main():
     except Exception as e:
         print(f"Error reading LLVM file '{args.llvm_file}': {e}", file=sys.stderr)
         sys.exit(1)
-
     print(f"Parsing LLVM IR file: {args.llvm_file}...")
     try:
-        # Build call graph from LLVM (structure comes from IR)
         call_graph, display_labels = build_call_graph_from_ll(
             llvm_code, no_filter=args.no_filter
         )
@@ -843,7 +755,6 @@ def main():
         print(f"Error building or filtering call graph: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
-
     if not call_graph.nodes:
         if args.no_filter:
             print("\nNo functions found in the LLVM IR file.")
@@ -867,14 +778,12 @@ def main():
             print(f"  - {display_name} ({mangled_node})")
     else:
         print("\nNo cycles detected in the filtered call graph.")
-
     svg_path = args.svg_file
     if not svg_path:
         base_name = args.llvm_file
         if base_name.lower().endswith(".ll"):
             base_name = base_name[:-3]
         svg_path = base_name + ".filtered.svg"
-
     print(f"\nGenerating filtered graph visualization...")
     draw_and_export_graph(
         call_graph,
@@ -885,7 +794,6 @@ def main():
         cyclic_nodes=cyclic_nodes,
         cyclic_edges=cyclic_edges,
     )
-
 
 if __name__ == "__main__":
     main()
